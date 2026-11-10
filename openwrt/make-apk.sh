@@ -5,7 +5,7 @@
 #
 #   SDK=/path/to/openwrt-sdk-25.x openwrt/make-apk.sh BINARY ARCH OUTPUT.apk
 #
-#   BINARY  e.g. target/aarch64-unknown-linux-musl/release/radio
+#   BINARY  e.g. target/aarch64-unknown-linux-musl/release/internet-radio-proxifier
 #   ARCH    OpenWrt package architecture, e.g. aarch64_cortex-a53, x86_64
 #
 # Env: SDK (required), VERSION (default: VERSION file + "-r1"), SIGN_KEY
@@ -22,7 +22,7 @@ ROOT=$(cd "$HERE/.." && pwd)
 HOSTBIN=$SDK/staging_dir/host/bin
 VERSION=${VERSION:-$(tr -d ' \r\n' < "$ROOT/VERSION")-r1}
 SIGN_KEY=${SIGN_KEY:-$SDK/private-key.pem}
-PKG=radio
+PKG=internet-radio-proxifier
 case $OUT in /*) ;; *) OUT=$PWD/$OUT ;; esac
 
 [ -f "$BIN" ] || { echo "missing $BIN" >&2; exit 1; }
@@ -33,15 +33,15 @@ trap 'rm -rf "$WORK"' EXIT
 IDIR=$WORK/data
 ADIR=$WORK/scripts
 mkdir -p "$IDIR/usr/bin" "$IDIR/etc/init.d" "$IDIR/etc/config" \
-	"$IDIR/usr/share/radio" "$IDIR/lib/upgrade/keep.d" "$IDIR/lib/apk/packages" "$ADIR"
+	"$IDIR/usr/share/$PKG" "$IDIR/lib/upgrade/keep.d" "$IDIR/lib/apk/packages" "$ADIR"
 
-install -m 0755 "$BIN"                        "$IDIR/usr/bin/radio"
-install -m 0755 "$HERE/files/radio.init"      "$IDIR/etc/init.d/radio"
-install -m 0644 "$HERE/files/radio.config"    "$IDIR/etc/config/radio"
-install -m 0644 "$ROOT/settings.example.ini"  "$IDIR/usr/share/radio/settings.example.ini"
+install -m 0755 "$BIN"                        "$IDIR/usr/bin/$PKG"
+install -m 0755 "$HERE/files/$PKG.init"      "$IDIR/etc/init.d/$PKG"
+install -m 0644 "$HERE/files/$PKG.config"    "$IDIR/etc/config/$PKG"
+install -m 0644 "$ROOT/settings.example.ini"  "$IDIR/usr/share/$PKG/settings.example.ini"
 # The station list is created at install time (not shipped), so keep it
-# across sysupgrade explicitly. /etc/config/radio is kept as a conffile.
-echo /etc/radio/ > "$IDIR/lib/upgrade/keep.d/radio"
+# across sysupgrade explicitly. /etc/config/internet-radio-proxifier is kept as a conffile.
+echo "/etc/$PKG/" > "$IDIR/lib/upgrade/keep.d/$PKG"
 
 SETUP=$(cat "$HERE/files/setup.sh")
 
@@ -63,7 +63,7 @@ EOF
 	# default_postinst only "start"s the service, which procd ignores when it
 	# is already running with the same command, so the new binary would not
 	# be used until the next reboot.
-	echo '[ -z "${IPKG_INSTROOT}" ] && /etc/init.d/radio restart'
+	echo '[ -z "${IPKG_INSTROOT}" ] && /etc/init.d/internet-radio-proxifier restart'
 	echo 'exit 0'
 } > "$ADIR/post-upgrade"
 cat > "$ADIR/pre-deinstall" <<EOF
@@ -77,8 +77,8 @@ EOF
 
 (cd "$IDIR" && find . -type f,l -printf "/%P\n" | sort > "$WORK/list")
 mv "$WORK/list" "$IDIR/lib/apk/packages/$PKG.list"
-echo /etc/config/radio > "$IDIR/lib/apk/packages/$PKG.conffiles"
-echo "/etc/config/radio $(sha256sum "$IDIR/etc/config/radio" | cut -d' ' -f1)" \
+echo "/etc/config/$PKG" > "$IDIR/lib/apk/packages/$PKG.conffiles"
+echo "/etc/config/$PKG $(sha256sum "$IDIR/etc/config/$PKG" | cut -d' ' -f1)" \
 	> "$IDIR/lib/apk/packages/$PKG.conffiles_static"
 
 rm -f "$OUT"
@@ -89,7 +89,7 @@ rm -f "$OUT"
 	--info "description:Web radio player that streams internet radio stations through the router, with a station manager and an optional SOCKS5/HTTP proxy per station" \
 	--info "arch:$ARCH" \
 	--info "license:LGPL-2.1" \
-	--info "origin:radio" \
+	--info "origin:$PKG" \
 	--info "url:https://github.com/stavultras/internet-radio-proxifier" \
 	--info "maintainer:stavultras" \
 	--info "depends:ca-bundle" \

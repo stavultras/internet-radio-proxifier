@@ -45,13 +45,13 @@ Every OpenWrt package comes in two formats: `.apk` for OpenWrt 25.x and
 ```sh
 tar xzf internet-radio-proxifier-*-linux-x86_64.tar.gz
 cd internet-radio-proxifier-*/
-./radio -h :8123 -c settings.ini
+./internet-radio-proxifier -h :8123 -c settings.ini
 ```
 
 ### Windows
 
 Unpack the zip and run `start.cmd`. It starts the radio on port 8123 with
-`settings.ini` next to `radio.exe` and opens the player in the browser.
+`settings.ini` next to `internet-radio-proxifier.exe` and opens the player in the browser.
 
 ### OpenWrt
 
@@ -70,17 +70,17 @@ OpenWrt 24.10 (opkg; architecture: `opkg print-architecture`, the last line):
 opkg install /tmp/internet-radio-proxifier-*-openwrt-aarch64_cortex-a53.ipk
 ```
 
-The package installs `/usr/bin/radio` and a procd service that runs it as
+The package installs `/usr/bin/internet-radio-proxifier` and a procd service that runs it as
 user `nobody` on port 8123:
 
-- `/etc/config/radio`: `enabled`, `address` (default `:8123`), `config`
-  (default `/etc/radio/settings.ini`)
-- `/etc/radio/settings.ini`: created with example stations on first start,
+- `/etc/config/internet-radio-proxifier`: `enabled`, `address` (default `:8123`), `config`
+  (default `/etc/internet-radio-proxifier/settings.ini`)
+- `/etc/internet-radio-proxifier/settings.ini`: created with example stations on first start,
   kept across sysupgrade
 
 ```sh
-/etc/init.d/radio restart
-logread -e radio
+/etc/init.d/internet-radio-proxifier restart
+logread -e internet-radio-proxifier
 ```
 
 Then open `http://<router>:8123/`.
@@ -88,10 +88,10 @@ Then open `http://<router>:8123/`.
 ## Usage
 
 ```
-radio -h ADDRESS [-c SETTINGS_FILE]
+internet-radio-proxifier -h ADDRESS [-c SETTINGS_FILE]
 
   -h, --host ADDRESS     listen address, e.g. :8123 (all interfaces) or 192.168.1.1:8123
-  -c, --config FILE      settings file (default: /etc/radio/settings.ini, on
+  -c, --config FILE      settings file (default: /etc/internet-radio-proxifier/settings.ini, on
                          Windows settings.ini); created with example stations
                          if it does not exist
       --help             show this help
@@ -160,7 +160,7 @@ SDK=/path/to/openwrt-sdk-25.12.5-x86-64_gcc-14.3.0_musl.Linux-x86_64 ./build.sh
   [openwrt/make-ipk.sh](openwrt/make-ipk.sh) with OpenWrt 24.10's own
   `scripts/ipkg-build`, which `build.sh` downloads on first use.
 - To build inside the OpenWrt SDK instead (with OpenWrt's Rust), link
-  [openwrt/radio](openwrt/radio) into the SDK's `package/` folder; see the
+  [openwrt/internet-radio-proxifier](openwrt/internet-radio-proxifier) into the SDK's `package/` folder; see the
   comment at the top of its Makefile.
 
 ## Releases

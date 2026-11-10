@@ -40,8 +40,8 @@ export CC_x86_64_unknown_linux_musl=${CC_x86_64_unknown_linux_musl:-gcc}
 
 bin() { # rust target -> path of the built binary
 	case $1 in
-		*windows*) echo "target/$1/release/radio.exe" ;;
-		*) echo "target/$1/release/radio" ;;
+		*windows*) echo "target/$1/release/internet-radio-proxifier.exe" ;;
+		*) echo "target/$1/release/internet-radio-proxifier" ;;
 	esac
 }
 
@@ -60,7 +60,7 @@ stage() { # dir name -> fresh staging dir with the common files
 linux() { # arch rust-target
 	build "$2"
 	d=$(stage "$NAME-$V")
-	install -m 0755 "$(bin "$2")" "$d/radio"
+	install -m 0755 "$(bin "$2")" "$d/internet-radio-proxifier"
 	tar -C "$DIST/stage" --owner=0 --group=0 -czf "$DIST/$NAME-$V-linux-$1.tar.gz" "$NAME-$V"
 	rm -rf "$DIST/stage"
 	echo "built $DIST/$NAME-$V-linux-$1.tar.gz"
@@ -69,12 +69,12 @@ linux() { # arch rust-target
 windows() {
 	build x86_64-pc-windows-gnu
 	d=$(stage "$NAME-$V")
-	cp "$(bin x86_64-pc-windows-gnu)" "$d/radio.exe"
-	# Double-click starter: settings.ini next to radio.exe (created with
+	cp "$(bin x86_64-pc-windows-gnu)" "$d/internet-radio-proxifier.exe"
+	# Double-click starter: settings.ini next to internet-radio-proxifier.exe (created with
 	# example stations on the first run), player opened in the browser.
 	printf '%s\r\n' '@echo off' 'cd /d "%~dp0"' \
 		'start "" http://localhost:8123/' \
-		'radio.exe --host :8123 --config settings.ini' 'pause' > "$d/start.cmd"
+		'internet-radio-proxifier.exe --host :8123 --config settings.ini' 'pause' > "$d/start.cmd"
 	(cd "$DIST/stage" && rm -f "$DIST/$NAME-$V-windows-x86_64.zip" && zip -qr9 "$DIST/$NAME-$V-windows-x86_64.zip" "$NAME-$V")
 	rm -rf "$DIST/stage"
 	echo "built $DIST/$NAME-$V-windows-x86_64.zip"

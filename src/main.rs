@@ -1,7 +1,7 @@
 //! Web radio player: streams internet radio stations through the router,
 //! with a station manager and an optional proxy per station.
 //!
-//! Usage: radio -h ADDRESS [-c SETTINGS_FILE]
+//! Usage: internet-radio-proxifier -h ADDRESS [-c SETTINGS_FILE]
 //! The settings file holds the proxy, the station list and the settings
 //! page password.
 
@@ -345,7 +345,7 @@ async fn static_file(Path(path): Path<String>) -> Response {
 
 async fn index(State(app): State<Shared>) -> Html<String> {
     let autoplay = if app.autoplay.load(Ordering::Relaxed) { "autoplay data-autoplay" } else { "" };
-    Html(INDEX.replace("{{.Url}}", &esc(&App::station_url(0))).replace("{{.Autoplay}}", autoplay))
+    Html(INDEX.replace("{{url}}", &esc(&App::station_url(0))).replace("{{autoplay}}", autoplay))
 }
 
 #[derive(Serialize)]
@@ -445,7 +445,6 @@ struct StationJson {
 struct ConfigJson {
     #[serde(default)]
     proxy: String,
-    #[serde(default = "yes")]
     autoplay: bool,
     #[serde(default)]
     stations: Vec<StationJson>,
@@ -476,10 +475,6 @@ fn unmask_proxy(raw: &str, saved: &str) -> String {
         (Some((pre, MASK, post)), Some((_, pw, _))) => format!("{pre}{pw}{post}"),
         _ => raw.to_string(),
     }
-}
-
-fn yes() -> bool {
-    true
 }
 
 fn config_json(app: &App) -> ConfigJson {
@@ -727,14 +722,14 @@ const VERSION: &str = include_str!("../VERSION");
 #[cfg(windows)]
 const DEFAULT_CONFIG: &str = "settings.ini";
 #[cfg(not(windows))]
-const DEFAULT_CONFIG: &str = "/etc/radio/settings.ini";
+const DEFAULT_CONFIG: &str = "/etc/internet-radio-proxifier/settings.ini";
 
 /// Written to the settings file path when the file does not exist yet.
 const EXAMPLE_SETTINGS: &str = include_str!("../settings.example.ini");
 
 fn usage() -> String {
     format!(
-        "Usage: radio -h ADDRESS [-c SETTINGS_FILE]
+        "Usage: internet-radio-proxifier -h ADDRESS [-c SETTINGS_FILE]
 
   -h, --host ADDRESS     listen address, e.g. :8123 (all interfaces) or 192.168.1.1:8123
   -c, --config FILE      settings file (default: {DEFAULT_CONFIG}); created
@@ -749,7 +744,7 @@ page password (password = ..., user name admin)."
 
 /// Returns (address, station file); exits on bad arguments.
 fn parse_args(mut args: impl Iterator<Item = String>) -> (String, String) {
-    let bad = |msg: &str| -> ! { fail(format!("radio: {msg}\n\n{}", usage())) };
+    let bad = |msg: &str| -> ! { fail(format!("internet-radio-proxifier: {msg}\n\n{}", usage())) };
     let (mut address, mut config) = (None, None);
     while let Some(arg) = args.next() {
         let (flag, inline) = match arg.split_once('=') {
@@ -764,7 +759,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> (String, String) {
                 std::process::exit(0)
             }
             "-V" | "--version" => {
-                println!("radio {}", VERSION.trim());
+                println!("internet-radio-proxifier {}", VERSION.trim());
                 std::process::exit(0)
             }
             _ => bad(&format!("unknown argument {arg:?}")),

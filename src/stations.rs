@@ -1,4 +1,4 @@
-//! The settings file (INI, go-ini compatible):
+//! The settings file (INI):
 //!
 //!   password  = secret        (settings page password; user name "admin")
 //!   proxy_url = socks5h://user:pass@192.168.1.10:1080
@@ -19,7 +19,7 @@ pub struct Station {
     pub use_proxy: bool,
 }
 
-/// Value of an INI line, go-ini style: """…""", `…`, "…" or '…' are taken
+/// Value of an INI line: """…""", `…`, "…" or '…' are taken
 /// literally; otherwise everything from the first # or ; is a comment.
 fn ini_value(v: &str) -> String {
     let v = v.trim();
@@ -65,27 +65,24 @@ pub fn parse(text: &str) -> Settings {
     let mut proxy = String::new();
     let mut password = String::new();
     let mut autoplay = true;
-    let mut in_default = true;
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
             continue;
         }
         if let Some(name) = line.strip_prefix('[').and_then(|l| l.rfind(']').map(|i| l[..i].trim())) {
-            in_default = name == "DEFAULT";
-            if !in_default {
-                list.push(Station { name: name.to_string(), url: String::new(), use_proxy: false });
-            }
+            list.push(Station { name: name.to_string(), url: String::new(), use_proxy: false });
             continue;
         }
-        let Some(i) = line.find(['=', ':']) else { continue };
+        let Some(i) = line.find('=') else { continue };
         let (key, value) = (line[..i].trim(), ini_value(&line[i + 1..]));
-        match (in_default, key, list.last_mut()) {
-            (true, "proxy_url", _) => proxy = value,
-            (true, "password", _) => password = value,
-            (true, "autoplay", _) => autoplay = parse_bool(&value),
-            (false, "url", Some(st)) => st.url = value,
-            (false, "use_proxy", Some(st)) => st.use_proxy = parse_bool(&value),
+        // Keys before the first [station] section are global settings.
+        match (list.last_mut(), key) {
+            (None, "proxy_url") => proxy = value,
+            (None, "password") => password = value,
+            (None, "autoplay") => autoplay = parse_bool(&value),
+            (Some(st), "url") => st.url = value,
+            (Some(st), "use_proxy") => st.use_proxy = parse_bool(&value),
             _ => {}
         }
     }

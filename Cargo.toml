@@ -1,6 +1,6 @@
 [package]
-name = "radio"
-# The release version is in the VERSION file (radio -V prints it).
+name = "internet-radio-proxifier"
+# The release version is in the VERSION file (internet-radio-proxifier -V prints it).
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.85"

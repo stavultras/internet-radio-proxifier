@@ -117,10 +117,10 @@ jobs:
           V=$(tr -d ' \r\n' < VERSION)
           for t in x86_64-unknown-linux-musl:x86_64 aarch64-unknown-linux-musl:aarch64 \
                    mipsel-unknown-linux-musl:mipsel mips-unknown-linux-musl:mips; do
-            b=target/${t%%:*}/release/radio
+            b=target/${t%%:*}/release/internet-radio-proxifier
             q=$(command -v qemu-${t#*:} || command -v qemu-${t#*:}-static)
             file "$b"
-            [ "$($q "$b" -V)" = "radio $V" ]
+            [ "$($q "$b" -V)" = "internet-radio-proxifier $V" ]
             rm -rf work && mkdir work
             $q "$b" -h 127.0.0.1:8123 -c work/settings.ini > work/run.log 2>&1 &
             pid=$!
@@ -148,14 +148,14 @@ jobs:
           name: packages
           path: dist
 
-      - name: Start radio.exe from the package
+      - name: Start internet-radio-proxifier.exe from the package
         shell: pwsh
         run: |
           Expand-Archive (Get-ChildItem dist/*-windows-x86_64.zip).FullName -DestinationPath pkg
           $dir = (Get-ChildItem pkg -Directory)[0].FullName
           Set-Location $dir
-          & .\radio.exe -V
-          $p = Start-Process .\radio.exe -ArgumentList '--host', ':8123', '--config', 'settings.ini' -PassThru -NoNewWindow
+          & .\internet-radio-proxifier.exe -V
+          $p = Start-Process .\internet-radio-proxifier.exe -ArgumentList '--host', ':8123', '--config', 'settings.ini' -PassThru -NoNewWindow
           $ok = $false
           for ($i = 0; $i -lt 30 -and -not $ok; $i++) {
             try { $r = Invoke-WebRequest http://127.0.0.1:8123/ -UseBasicParsing; $ok = $r.Content -match 'Internet Radio' } catch { Start-Sleep 1 }
@@ -191,7 +191,7 @@ jobs:
         run: |
           cat > body.md <<'EOF'
           - **Linux** (`...-linux-x86_64.tar.gz`, `...-linux-aarch64.tar.gz`): static
-            binaries, run `./radio -h :8123 -c settings.ini`
+            binaries, run `./internet-radio-proxifier -h :8123 -c settings.ini`
           - **Windows** (`...-windows-x86_64.zip`): run `start.cmd`
           - **OpenWrt 25.x** (`...-openwrt-<arch>.apk`): pick your router's package
             architecture (`cat /etc/apk/arch`), then

@@ -161,7 +161,7 @@ if ('mediaSession' in navigator) {
 const volume = document.querySelector('#volume-slider');
 // Keep volume across station changes (issue #3) and page reloads.
 try {
-	const saved = localStorage.getItem('radio-volume');
+	const saved = localStorage.getItem('internet-radio-proxifier-volume');
 	if (saved !== null) volume.value = saved;
 } catch (e) {}
 const volumeValue = document.querySelector('#volume-value');
@@ -171,7 +171,7 @@ function applyVolume() {
 }
 volume.addEventListener('input', () => {
 	applyVolume();
-	try { localStorage.setItem('radio-volume', volume.value); } catch (e) {}
+	try { localStorage.setItem('internet-radio-proxifier-volume', volume.value); } catch (e) {}
 });
 for (const ev of ['loadstart', 'loadedmetadata', 'playing']) {
 	player.addEventListener(ev, applyVolume);
@@ -375,7 +375,7 @@ document.querySelector('#button-random').addEventListener('click', async () => {
 
 // Remember the last station in this browser. Stored by name, so reordering
 // the list on the settings page doesn't change which station comes back.
-const LAST_STATION_KEY = 'radio-last-station';
+const LAST_STATION_KEY = 'internet-radio-proxifier-last-station';
 let wantedStation = null;
 try { wantedStation = localStorage.getItem(LAST_STATION_KEY); } catch (e) {}
 let firstConnect = true;

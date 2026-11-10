@@ -5,7 +5,7 @@
 #
 #   IPKG_BUILD=/path/to/ipkg-build openwrt/make-ipk.sh BINARY ARCH OUTPUT.ipk
 #
-#   BINARY      e.g. target/aarch64-unknown-linux-musl/release/radio
+#   BINARY      e.g. target/aarch64-unknown-linux-musl/release/internet-radio-proxifier
 #   ARCH        OpenWrt package architecture, e.g. aarch64_cortex-a53, x86_64
 #   IPKG_BUILD  scripts/ipkg-build of an OpenWrt 24.10 SDK or source tree
 #
@@ -18,7 +18,7 @@ BIN=$1 ARCH=$2 OUT=$3
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/.." && pwd)
 VERSION=${VERSION:-$(tr -d ' \r\n' < "$ROOT/VERSION")-r1}
-PKG=radio
+PKG=internet-radio-proxifier
 case $OUT in /*) ;; *) OUT=$PWD/$OUT ;; esac
 : "${IPKG_BUILD:?set IPKG_BUILD to scripts/ipkg-build of OpenWrt 24.10}"
 [ -f "$BIN" ] || { echo "missing $BIN" >&2; exit 1; }
@@ -27,15 +27,15 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 IDIR=$WORK/$PKG
 mkdir -p "$IDIR/usr/bin" "$IDIR/etc/init.d" "$IDIR/etc/config" \
-	"$IDIR/usr/share/radio" "$IDIR/lib/upgrade/keep.d" "$IDIR/CONTROL" "$WORK/out"
+	"$IDIR/usr/share/$PKG" "$IDIR/lib/upgrade/keep.d" "$IDIR/CONTROL" "$WORK/out"
 
-install -m 0755 "$BIN"                        "$IDIR/usr/bin/radio"
-install -m 0755 "$HERE/files/radio.init"      "$IDIR/etc/init.d/radio"
-install -m 0644 "$HERE/files/radio.config"    "$IDIR/etc/config/radio"
-install -m 0644 "$ROOT/settings.example.ini"  "$IDIR/usr/share/radio/settings.example.ini"
+install -m 0755 "$BIN"                        "$IDIR/usr/bin/$PKG"
+install -m 0755 "$HERE/files/$PKG.init"      "$IDIR/etc/init.d/$PKG"
+install -m 0644 "$HERE/files/$PKG.config"    "$IDIR/etc/config/$PKG"
+install -m 0644 "$ROOT/settings.example.ini"  "$IDIR/usr/share/$PKG/settings.example.ini"
 # The settings file is created at install time (not shipped), so keep it
-# across sysupgrade explicitly. /etc/config/radio is kept as a conffile.
-echo /etc/radio/ > "$IDIR/lib/upgrade/keep.d/radio"
+# across sysupgrade explicitly. /etc/config/internet-radio-proxifier is kept as a conffile.
+echo "/etc/$PKG/" > "$IDIR/lib/upgrade/keep.d/$PKG"
 
 cd "$IDIR/CONTROL"
 cat > control <<EOF
@@ -53,7 +53,7 @@ Architecture: $ARCH
 Installed-Size: $(du -sb --exclude=CONTROL "$IDIR" | cut -f1)
 Description:  Web radio player that streams internet radio stations through the router, with a station manager and an optional SOCKS5/HTTP proxy per station
 EOF
-echo /etc/config/radio > conffiles
+echo "/etc/config/$PKG" > conffiles
 # postinst and prerm exactly as the SDK writes them; the package's own
 # step is postinst-pkg, which default_postinst runs before it enables and
 # starts the service.
@@ -74,7 +74,7 @@ EOF
 	cat "$HERE/files/setup.sh"
 	# On an upgrade the old binary may still be running, and "start" in
 	# default_postinst leaves a running service alone: restart it.
-	echo '[ -z "${IPKG_INSTROOT}" ] && pidof radio >/dev/null && /etc/init.d/radio restart'
+	echo '[ -z "${IPKG_INSTROOT}" ] && pidof internet-radio-proxifier >/dev/null && /etc/init.d/internet-radio-proxifier restart'
 	echo 'true'
 } > postinst-pkg
 chmod 0644 control conffiles postinst-pkg

@@ -1,41 +1,37 @@
 #!/bin/sh /etc/rc.common
-# procd service for the radio stream app. Settings: /etc/config/radio
+# procd service for internet-radio-proxifier. Settings: /etc/config/internet-radio-proxifier
 
 START=95
 STOP=10
 USE_PROCD=1
-PROG=/usr/bin/radio
-EXAMPLE=/usr/share/radio/settings.example.ini
+NAME=internet-radio-proxifier
+PROG=/usr/bin/$NAME
+EXAMPLE=/usr/share/$NAME/settings.example.ini
 
-# First start (or a missing file): create the settings file from the example
-# (or from stations.ini of older versions), owned by the service user, who
-# must be able to rewrite it from the settings page.
+# First start (or a missing file): create the settings file from the
+# example, owned by the service user, who must be able to rewrite it from
+# the settings page.
 prepare_settings() {
 	local file="$1" dir="${1%/*}"
 	[ -f "$file" ] && return 0
-	mkdir -p "$dir" || return 1
-	if [ -f "$dir/stations.ini" ]; then
-		mv "$dir/stations.ini" "$file" || return 1
-		logger -t radio "renamed $dir/stations.ini to $file"
-	else
-		[ -f "$EXAMPLE" ] && cp "$EXAMPLE" "$file" || return 1
-		logger -t radio "created $file from $EXAMPLE"
-	fi
+	[ -f "$EXAMPLE" ] || return 1
+	mkdir -p "$dir" && cp "$EXAMPLE" "$file" || return 1
 	chown nobody:nogroup "$dir" "$file" 2>/dev/null || chown 65534:65534 "$dir" "$file"
 	chmod 700 "$dir"
 	chmod 600 "$file"
+	logger -t $NAME "created $file from $EXAMPLE"
 }
 
 start_service() {
 	local enabled address config
-	config_load radio
+	config_load $NAME
 	config_get_bool enabled main enabled 1
 	[ "$enabled" = 1 ] || return 0
 	config_get address main address ':8123'
-	config_get config main config '/etc/radio/settings.ini'
+	config_get config main config "/etc/$NAME/settings.ini"
 
 	if ! prepare_settings "$config"; then
-		logger -t radio "settings file $config not found"
+		logger -t $NAME "settings file $config not found"
 		return 1
 	fi
 
@@ -50,5 +46,5 @@ start_service() {
 }
 
 service_triggers() {
-	procd_add_reload_trigger radio
+	procd_add_reload_trigger $NAME
 }
