@@ -1,0 +1,119 @@
+body.settings {
+	text-align: left;
+	max-width: 900px;
+	margin: 0 auto;
+	padding: 16px;
+	box-sizing: border-box;
+}
+body.settings h1 { text-align: center; }
+body.settings > * { margin-bottom: 16px; }
+.settings-nav { text-align: center; }
+
+.settings button, .settings input {
+	font: inherit;
+	color: var(--color);
+	background: var(--background-color);
+	border: 1px solid var(--color);
+	padding: 6px 10px;
+}
+.settings button { cursor: pointer; }
+.settings input { font-size: 14px; }
+.station-row button {
+	min-width: 0;
+	min-height: 0;
+	margin: 0;
+	font-size: 13px;
+	letter-spacing: 1px;
+	padding: 4px 9px;
+	border-width: 1px;
+	box-shadow: 2px 2px 0 0;
+}
+.station-row button:active { top: 2px; left: 2px; }
+.settings-actions button {
+	min-width: 0;
+	margin: 0 0 6px 0;
+	padding: 0.25em 0.9em;
+}
+.settings button:hover:not(:disabled) { background: var(--color); color: var(--background-color); }
+.settings button:disabled { opacity: .4; cursor: default; }
+.settings button.primary { font-weight: bold; }
+.settings input { width: 100%; box-sizing: border-box; min-width: 0; }
+.settings input:focus { outline: 2px solid var(--color); outline-offset: 1px; }
+.settings input.invalid { border-color: #ff6b6b; }
+
+/* Rows are grid items (no list numbers), so no inset: they line up with the proxy box. */
+#station-list { padding-left: 0; margin: 0; }
+.station-row {
+	display: grid;
+	grid-template-columns: auto 1fr auto;
+	gap: 6px 8px;
+	align-items: center;
+	padding: 8px 0;
+	border-bottom: 1px dashed rgba(127, 255, 212, .3);
+}
+.station-row .fields {
+	display: grid;
+	grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+	gap: 6px;
+}
+.row-buttons { display: flex; gap: 6px; align-items: center; }
+/* Grip on the left of each row: a plain icon, not a bordered button. */
+.settings .station-row .b-drag {
+	cursor: grab;
+	touch-action: none;
+	border: 0;
+	box-shadow: none;
+	background: none;
+	color: var(--color);
+	font-size: 20px;
+	line-height: 1;
+	padding: 4px 2px;
+	opacity: .6;
+}
+.settings .station-row .b-drag:hover:not(:disabled) { background: none; color: var(--color); opacity: 1; }
+.settings .station-row .b-drag:disabled { cursor: default; opacity: .2; }
+.drag-active, .drag-active * { cursor: grabbing !important; user-select: none; }
+.station-row.dragging { background: rgba(127, 255, 212, .12); outline: 1px dashed var(--color); }
+.test-result { grid-column: 1 / -1; font-size: .9em; min-height: 0; }
+.test-result:empty { display: none; }
+.test-result.ok { color: #7CFC00; }
+.test-result.bad { color: #ff6b6b; }
+.test-result.busy { opacity: .7; }
+
+.settings-actions { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; justify-content: center; margin-top: 20px; }
+
+#settings-msg { min-height: 1.4em; text-align: center; }
+#settings-msg.ok { color: #7CFC00; }
+#settings-msg.bad { color: #ff6b6b; }
+#settings-msg.dirty { color: #ffd166; }
+
+@media (max-width: 640px) {
+	.station-row { grid-template-columns: auto 1fr; }
+	.station-row .b-drag { grid-row: span 2; }
+	.row-buttons { grid-column: 2; }
+	.station-row .fields { grid-template-columns: 1fr; }
+	.row-buttons { justify-content: flex-end; }
+}
+
+.proxy-box {
+	border: 1px solid var(--color);
+	padding: 12px;
+}
+.proxy-box label { display: block; font-weight: bold; margin-bottom: 6px; }
+.proxy-box label.check { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; margin: 0; }
+.settings .proxy-box label.check input { width: auto; accent-color: var(--color); margin: 0; }
+.proxy-box .hint { font-size: 12px; opacity: .8; margin: 6px 0 0; }
+.proxy-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 13px;
+	cursor: pointer;
+	white-space: nowrap;
+	margin-right: 4px;
+}
+.settings .proxy-toggle input {
+	width: auto;
+	accent-color: var(--color);
+	margin: 0;
+}

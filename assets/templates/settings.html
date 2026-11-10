@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<title>Settings · Internet Radio</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width,initial-scale=1">
+		<link rel="icon" href="/static/icon-192.png" type="image/png">
+		<link rel="stylesheet" href="/static/style.css">
+		<link rel="stylesheet" href="/static/settings.css">
+	</head>
+	<body class="settings">
+		<h1>Settings</h1>
+		<p class="settings-nav"><a href="/">&larr; back to radio</a></p>
+
+		<section class="proxy-box player-box">
+			<label class="check"><input type="checkbox" id="autoplay"> Autoplay</label>
+			<p class="hint">Start playing as soon as the radio page is opened. Browsers may still ask for one click first.</p>
+		</section>
+
+		<section class="proxy-box">
+			<label for="proxy-url">Proxy</label>
+			<input id="proxy-url" placeholder="socks5://user:password@192.168.1.10:1080" autocomplete="off" spellcheck="false">
+			<p class="hint">Used only by stations with <b>proxy</b> ticked. Supports socks5://, socks5h:// (DNS on the proxy), http://. Format: socks5h://user:password@host:port; without a port, 1080 is used for SOCKS. Leave empty for none. The saved password is shown as ********; leave it as is to keep it.</p>
+		</section>
+
+		<div id="settings-msg" role="status"></div>
+
+		<ol id="station-list"></ol>
+
+		<div class="settings-actions">
+			<button type="button" id="btn-add">Add</button>
+			<button type="button" id="btn-test-all">Test all</button>
+			<button type="button" id="btn-proxy-failing" title="Run tests, then tick proxy for stations that only work through it">Proxy the failing</button>
+			<button type="button" id="btn-revert">Undo changes</button>
+			<button type="button" id="btn-save" class="primary">Save</button>
+		</div>
+
+		<template id="row-template">
+			<li class="station-row">
+				<button type="button" class="b-drag" title="Drag to reorder (or focus and use the arrow keys)" aria-label="Reorder">&#x283F;</button>
+				<div class="fields">
+					<input class="f-name" placeholder="Station name" autocomplete="off" aria-label="Station name">
+					<input class="f-url" placeholder="https://stream.example.com/live.mp3" autocomplete="off" inputmode="url" aria-label="Stream URL">
+				</div>
+				<div class="row-buttons">
+					<label class="proxy-toggle" title="Connect to this station through the proxy"><input type="checkbox" class="f-proxy"> proxy</label>
+					<button type="button" class="b-test" title="Check that the stream plays">test</button>
+					<button type="button" class="b-del" title="Remove" aria-label="Remove">&times;</button>
+				</div>
+				<div class="test-result"></div>
+			</li>
+		</template>
+
+		<script src="/static/settings.js"></script>
+	</body>
+</html>

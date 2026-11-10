@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<title>Internet Radio</title>
+		<meta
+		name="viewport"
+		content="width=device-width,height=device-height,user-scalable=no,initial-scale=1,maximum-scale=1,minimum-scale=1"
+		/>
+		<script src="https://unpkg.com/htmx.org@1.9.12" integrity="sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2" crossorigin="anonymous"></script>
+		<script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/ws.js"></script>
+		<link rel="icon" href="/static/icon-192.png" type="image/png">
+		<link rel="apple-touch-icon" href="/static/icon-192.png">
+		<link rel="manifest" href="/manifest.webmanifest">
+		<meta name="theme-color" content="#000000">
+		<meta name="mobile-web-app-capable" content="yes">
+		<meta name="apple-mobile-web-app-capable" content="yes">
+		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+		<meta name="apple-mobile-web-app-title" content="Internet Radio">
+		<link rel="stylesheet" href="static/style.css">
+	</head>
+		<body id="ws-container" hx-ext="ws" ws-connect="/ws">
+			<h1>Internet Radio</h1>
+			<div class="mainbox">
+				<div id="status"></div>
+
+				<div class="meta-container">
+					<div id="station-name"><br></div>
+					<div id="station-title"><br></div>
+					<audio id="audio-player" {{.Autoplay}}>
+						<source id="audio-source" src="{{.Url}}" data-index="0" type="audio/mpeg">
+					</audio>
+				</div>
+				<div class="buttoncontainer">
+					<button id="button-ws-prev" ws-send hx-vals='{"action": "previous"}'>
+						Previous<br>Station
+					</button>
+					<button id="play-pause-button">Play</button>
+					<button id="button-ws-next" ws-send hx-vals='{"action": "next"}'>
+						Next<br>Station
+					</button>
+					<button id="button-stations" type="button" aria-haspopup="dialog">
+						All<br>Stations
+					</button>
+					<button id="button-random" type="button">
+						Random<br>Station
+					</button>
+				</div>
+
+				<dialog id="station-dialog" aria-labelledby="station-dialog-title">
+					<div class="station-dialog-head">
+						<h2 id="station-dialog-title">Stations</h2>
+						<button type="button" class="station-dialog-close" aria-label="Close">&times;</button>
+					</div>
+					<input type="search" id="station-filter" placeholder="Filter…" autocomplete="off" aria-label="Filter stations">
+					<ul id="station-picker"></ul>
+				</dialog>
+
+				<div class="volume-row">
+					<input type="range" class="slider" id="volume-slider" min="0" max="1" step="0.01" value="1" aria-label="Volume">
+					<output id="volume-value" for="volume-slider">100%</output>
+				</div>
+
+
+			</div>
+
+
+
+			<script src="static/script.js" defer></script>
+		</body>
+		<footer>
+			<p><a href="/settings">settings</a></p>
+		</footer>
+
+</html>

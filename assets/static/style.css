@@ -1,0 +1,348 @@
+
+:root {
+	--color: Aquamarine;
+	--background-color: Black;
+	--font-size: 13;
+}
+
+
+body {
+	text-align: center;
+
+	font-family: Berkeley Mono, monospace;
+	font-size: var(--font-size);
+	background-color: var(--background-color);
+	color: var(--color);
+	padding: 10px;
+
+}
+
+body > *:not(:last-child) {
+	display: block;
+	margin-bottom: 30px;
+}
+
+footer {
+	position:fixed;
+	bottom:0;
+	left:0;
+	width: 100%;
+	font-style: italic;
+}
+a {
+	color: var(--color);
+}
+.stationurl {
+	text-decoration: none;
+}
+
+.stationurl:hover {
+	text-decoration: underline;
+}
+
+.meta-container {
+	padding-top: 10px;
+	padding-bottom: 30px;
+}
+
+.emoji {
+	color: transparent;
+	text-shadow: 0 0 0 var(--color);
+}
+
+[data-status="connected"] {
+	color: green;
+}
+
+[data-status="disconnected"] {
+	color: red;
+}
+
+/* CSS */
+button {
+	font-family: Berkeley Mono, monospace;
+	font-size: 16px;
+	letter-spacing: 2px;
+	text-decoration: none;
+	text-transform: uppercase;
+	color: var(--color);
+	background-color: var(--background-color);
+	cursor: pointer;
+	border: 3px solid;
+	padding: 0.25em 0.5em;
+	box-shadow: 1px 1px 0px 0px, 2px 2px 0px 0px, 3px 3px 0px 0px, 4px 4px 0px 0px, 5px 5px 0px 0px;
+	position: relative;
+	user-select: none;
+	-webkit-user-select: none;
+	touch-action: manipulation;
+	min-width: 150px;
+	min-height: 50px;
+	margin: 5px;
+}
+
+button:active {
+	box-shadow: 0px 0px 0px 0px;
+	top: 5px;
+	left: 5px;
+}
+
+/*@media (min-width: 768px) {*/
+/*	button {*/
+/*		padding: 0.25em 0.75em;*/
+/*	}*/
+/*}*/
+
+.slider {
+	-webkit-appearance: none;
+	width: 95%;
+	height: 15px;
+	background: DarkSlateGray;
+	outline: none;
+	opacity: 0.7;
+	-webkit-transition: .2s;
+	transition: opacity .2s;
+	margin: 10px;
+}
+
+.volume-row {
+	display: flex;
+	align-items: center;
+	gap: 0.5em;
+	margin: 10px;
+}
+
+.volume-row .slider {
+	flex: 1;
+	width: auto;
+	margin: 0;
+}
+
+#volume-value {
+	min-width: 4ch;
+	text-align: right;
+	color: var(--color);
+	font-variant-numeric: tabular-nums;
+}
+
+.slider::-webkit-slider-thumb {
+	-webkit-appearance: none;
+	appearance: none;
+	width: 25px;
+	height: 25px;
+	background: var(--color);
+	cursor: pointer;
+}
+
+.slider::-moz-range-thumb {
+	width: 25px;
+	height: 25px;
+	background: var(--color);
+	cursor: pointer;
+}
+
+.mainbox {
+	border: 1px solid var(--color);
+	max-width: 500px;
+	display: block;
+	margin-left: auto;
+	margin-right: auto;
+	padding-bottom: 35px;
+}
+
+.newsbox {
+	max-width: 500px;
+	display: block;
+	margin-left: auto;
+	margin-right: auto;
+	margin-top: 0;
+	margin-bottom: 0;
+}
+
+.mainbox {
+	padding-top: 20px;
+}
+
+.buttoncontainer {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-wrap: wrap;
+	width: 100%;
+	padding-bottom: 10px;
+}
+
+
+@media (max-width: 700px) {
+	.buttoncontainer{
+		flex-direction: column;
+	}
+
+	.volume-row {
+		visibility: hidden;
+	}
+
+}
+
+input {
+	width: 100%;
+	background-color: transparent;
+	color: var(--color);
+	font-size: var(--font-size);
+	font-family: Berkeley Mono, monospace;
+	outline: none;
+	border: none;
+	caret-shape: block;
+}
+
+
+input::placeholder {
+	color: var(--color);
+	opacity: 0.7;
+	font-size: var(--font-size);
+	font-family: Berkeley Mono, monospace;
+}
+
+
+
+
+.marquee {
+	overflow: hidden;
+	position: relative;
+	height: 50px;
+	width: 100%;
+	/* Full width of its parent */
+	white-space: nowrap;
+}
+
+.marquee p {
+	position: absolute;
+	width: auto;
+	height: 100%;
+	margin: 0;
+	line-height: 50px;
+	text-align: center;
+	/* Start off the right edge */
+	transform: translateX(100%);
+	/* Animate to the left */
+	animation: scroll-left 20s linear infinite;
+}
+
+@keyframes scroll-left {
+	0% {
+		transform: translateX(100%);
+	}
+
+	100% {
+		transform: translateX(-100%);
+	}
+}
+
+/* Station picker dialog */
+#station-dialog {
+	background: var(--background-color);
+	color: var(--color);
+	border: 3px solid var(--color);
+	box-shadow: 5px 5px 0 0 var(--color);
+	padding: 16px;
+	width: min(480px, calc(100vw - 32px));
+	max-height: min(80vh, 700px);
+	box-sizing: border-box;
+	font-family: Berkeley Mono, monospace;
+}
+#station-dialog[open] {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+#station-dialog::backdrop {
+	background: rgba(0, 0, 0, 0.75);
+}
+.station-dialog-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+}
+.station-dialog-head h2 {
+	margin: 0;
+	font-size: 18px;
+}
+#station-dialog button.station-dialog-close {
+	min-width: 0;
+	min-height: 0;
+	margin: 0;
+	padding: 2px 10px;
+	border-width: 1px;
+	box-shadow: 2px 2px 0 0;
+}
+#station-filter {
+	border: 1px solid var(--color);
+	padding: 8px;
+	box-sizing: border-box;
+	font-size: 14px;
+}
+#station-picker {
+	scrollbar-color: var(--color) var(--background-color);
+	list-style: none;
+	margin: 0;
+	padding: 0 6px 6px 0;
+	overflow-y: auto;
+	text-align: left;
+}
+#station-picker li {
+	margin-bottom: 6px;
+}
+#station-dialog .station-pick {
+	width: 100%;
+	min-width: 0;
+	min-height: 0;
+	margin: 0;
+	padding: 8px 10px;
+	text-align: left;
+	text-transform: none;
+	letter-spacing: 0;
+	font-size: 14px;
+	border-width: 1px;
+	box-shadow: 2px 2px 0 0;
+}
+#station-dialog .station-pick[aria-current] {
+	background: var(--color);
+	color: var(--background-color);
+}
+#station-dialog .station-pick {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+#station-dialog .pick-name {
+	flex: 1;
+	min-width: 0;
+}
+#station-dialog .station-pick[aria-current] .pick-name::after {
+	content: '  \2190  now playing';
+}
+#station-dialog .pick-proxy {
+	flex: none;
+	font-size: 11px;
+	letter-spacing: 1px;
+	text-transform: uppercase;
+	border: 1px solid currentColor;
+	padding: 0 5px;
+	opacity: 0.75;
+}
+#station-dialog .station-pick:active {
+	top: 2px;
+	left: 2px;
+}
+
+/* Browser blocked autoplay: point at the Play button until the first click */
+body.needs-gesture #play-pause-button {
+	background: var(--color);
+	color: var(--background-color);
+	animation: play-hint 1.2s ease-in-out infinite;
+}
+@keyframes play-hint {
+	50% { background: var(--background-color); color: var(--color); }
+}
+@media (prefers-reduced-motion: reduce) {
+	body.needs-gesture #play-pause-button { animation: none; }
+}
