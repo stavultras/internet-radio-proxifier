@@ -15,6 +15,7 @@
 #   internet-radio-proxifier-<V>-linux-aarch64.tar.gz    static (musl)
 #   internet-radio-proxifier-<V>-windows-x86_64.zip
 #   internet-radio-proxifier-<V>-openwrt-<arch>.apk      OpenWrt 25.x
+#   internet-radio-proxifier-<V>-openwrt-<arch>.ipk      OpenWrt 24.10
 name: Build/release
 
 on:
@@ -30,6 +31,8 @@ permissions:
 env:
   # The OpenWrt SDK (for its apk and fakeroot) and the MIPS toolchains
   OPENWRT_RELEASE: 25.12.5
+  # its scripts/ipkg-build makes the ipk packages
+  OPENWRT24_RELEASE: 24.10.8
   SDK_NAME: openwrt-sdk-25.12.5-x86-64_gcc-14.3.0_musl.Linux-x86_64
   # nightly for MIPS (-Z build-std); keep in step with build.sh
   NIGHTLY: nightly-2026-11-09
@@ -81,7 +84,7 @@ jobs:
           path: |
             ~/openwrt-sdk-host
             ~/.cache/openwrt-toolchains
-          key: openwrt-${{ env.OPENWRT_RELEASE }}
+          key: openwrt-${{ env.OPENWRT_RELEASE }}-${{ env.OPENWRT24_RELEASE }}
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -107,7 +110,7 @@ jobs:
         run: cargo test --release --locked
 
       - name: Packages
-        run: NIGHTLY="$NIGHTLY" OPENWRT_RELEASE="$OPENWRT_RELEASE" ./build.sh
+        run: ./build.sh
 
       - name: Binaries start (version, player page, settings file)
         run: |
@@ -193,6 +196,9 @@ jobs:
           - **OpenWrt 25.x** (`...-openwrt-<arch>.apk`): pick your router's package
             architecture (`cat /etc/apk/arch`), then
             `apk add --allow-untrusted internet-radio-proxifier-...-openwrt-<arch>.apk`
+          - **OpenWrt 24.10** (`...-openwrt-<arch>.ipk`): architecture from
+            `opkg print-architecture`, then
+            `opkg install internet-radio-proxifier-...-openwrt-<arch>.ipk`
 
           Player: `http://<host>:8123/`, settings: `http://<host>:8123/settings`.
           EOF

@@ -43,15 +43,7 @@ install -m 0644 "$ROOT/settings.example.ini"  "$IDIR/usr/share/radio/settings.ex
 # across sysupgrade explicitly. /etc/config/radio is kept as a conffile.
 echo /etc/radio/ > "$IDIR/lib/upgrade/keep.d/radio"
 
-# Runs before OpenWrt's default_postinst, which enables and starts the
-# service, so the station file must exist by then.
-SETUP='# radio: settings directory, writable by the service user only
-mkdir -p "${IPKG_INSTROOT}/etc/radio"
-[ -f "${IPKG_INSTROOT}/etc/radio/stations.ini" ] && [ ! -f "${IPKG_INSTROOT}/etc/radio/settings.ini" ] && mv "${IPKG_INSTROOT}/etc/radio/stations.ini" "${IPKG_INSTROOT}/etc/radio/settings.ini"
-[ -f "${IPKG_INSTROOT}/etc/radio/settings.ini" ] || cp "${IPKG_INSTROOT}/usr/share/radio/settings.example.ini" "${IPKG_INSTROOT}/etc/radio/settings.ini"
-chown -R nobody:nogroup "${IPKG_INSTROOT}/etc/radio" 2>/dev/null || chown -R 65534:65534 "${IPKG_INSTROOT}/etc/radio"
-chmod 700 "${IPKG_INSTROOT}/etc/radio"
-chmod 600 "${IPKG_INSTROOT}/etc/radio/settings.ini"'
+SETUP=$(cat "$HERE/files/setup.sh")
 
 cat > "$ADIR/post-install" <<EOF
 #!/bin/sh

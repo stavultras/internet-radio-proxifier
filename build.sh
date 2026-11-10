@@ -6,9 +6,11 @@
 #   linux-x86_64     internet-radio-proxifier-<V>-linux-x86_64.tar.gz    (static, musl)
 #   linux-aarch64    internet-radio-proxifier-<V>-linux-aarch64.tar.gz   (static, musl)
 #   windows-x86_64   internet-radio-proxifier-<V>-windows-x86_64.zip
-#   openwrt          internet-radio-proxifier-<V>-openwrt-<arch>.apk for
-#                    OpenWrt 25.x on aarch64, x86_64, mipsel_24kc and
-#                    mips_24kc (needs SDK=..., see openwrt/make-apk.sh)
+#   openwrt          internet-radio-proxifier-<V>-openwrt-<arch>.apk (OpenWrt
+#                    25.x) and .ipk (OpenWrt 24.10) for aarch64, x86_64,
+#                    mipsel_24kc and mips_24kc (needs SDK=..., see
+#                    openwrt/make-apk.sh; the ipk packages are made with
+#                    OpenWrt 24.10's scripts/ipkg-build, downloaded once)
 #
 # Needs: rustup targets x86_64-unknown-linux-musl, aarch64-unknown-linux-musl,
 # x86_64-pc-windows-gnu; gcc-aarch64-linux-gnu and gcc-mingw-w64-x86-64 for
@@ -27,6 +29,7 @@ DIST=$ROOT/dist
 OPENWRT_AARCH64="aarch64_cortex-a53 aarch64_cortex-a72 aarch64_cortex-a76 aarch64_generic"
 OPENWRT_X86_64="x86_64"
 OPENWRT_RELEASE=${OPENWRT_RELEASE:-25.12.5}
+OPENWRT24_RELEASE=${OPENWRT24_RELEASE:-24.10.8}
 NIGHTLY=${NIGHTLY:-nightly-2026-11-09}
 TOOLCHAINS=${TOOLCHAINS:-$HOME/.cache/openwrt-toolchains}
 
@@ -104,21 +107,38 @@ mips() { # rust target, OpenWrt target/subtarget
 		cargo "+$NIGHTLY" build --release --locked -Z build-std=std,panic_abort --target "$1"
 }
 
+# OpenWrt 24.10's ipk builder (a shell script, the same as in its SDK)
+ipkg_build() {
+	f=$TOOLCHAINS/ipkg-build-$OPENWRT24_RELEASE
+	if [ ! -s "$f" ]; then
+		mkdir -p "$TOOLCHAINS"
+		curl -sfL "https://raw.githubusercontent.com/openwrt/openwrt/v$OPENWRT24_RELEASE/scripts/ipkg-build" -o "$f.tmp"
+		mv "$f.tmp" "$f"
+	fi
+	echo "$f"
+}
+
+# apk (OpenWrt 25.x) and ipk (24.10) packages of one binary
+package() { # binary, OpenWrt arch
+	openwrt/make-apk.sh "$1" "$2" "$DIST/$NAME-$V-openwrt-$2.apk"
+	IPKG_BUILD=$(ipkg_build) openwrt/make-ipk.sh "$1" "$2" "$DIST/$NAME-$V-openwrt-$2.ipk"
+}
+
 openwrt() {
 	: "${SDK:?set SDK to an OpenWrt 25.x SDK directory (for its apk and fakeroot tools)}"
 	for t in aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do
 		build $t
 	done
 	for a in $OPENWRT_AARCH64; do
-		openwrt/make-apk.sh "$(bin aarch64-unknown-linux-musl)" "$a" "$DIST/$NAME-$V-openwrt-$a.apk"
+		package "$(bin aarch64-unknown-linux-musl)" "$a"
 	done
 	for a in $OPENWRT_X86_64; do
-		openwrt/make-apk.sh "$(bin x86_64-unknown-linux-musl)" "$a" "$DIST/$NAME-$V-openwrt-$a.apk"
+		package "$(bin x86_64-unknown-linux-musl)" "$a"
 	done
 	mips mipsel-unknown-linux-musl ramips/mt7621
-	openwrt/make-apk.sh "$(bin mipsel-unknown-linux-musl)" mipsel_24kc "$DIST/$NAME-$V-openwrt-mipsel_24kc.apk"
+	package "$(bin mipsel-unknown-linux-musl)" mipsel_24kc
 	mips mips-unknown-linux-musl ath79/generic
-	openwrt/make-apk.sh "$(bin mips-unknown-linux-musl)" mips_24kc "$DIST/$NAME-$V-openwrt-mips_24kc.apk"
+	package "$(bin mips-unknown-linux-musl)" mips_24kc
 }
 
 mkdir -p "$DIST"

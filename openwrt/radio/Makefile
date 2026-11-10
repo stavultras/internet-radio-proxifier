@@ -7,6 +7,7 @@
 #   ln -s /path/to/internet-radio-proxifier/openwrt/radio package/radio
 #   ./scripts/feeds update packages && ./scripts/feeds install rust
 #   make package/radio/compile V=s
+# Works with the OpenWrt 25.x (apk) and 24.10 (ipk) SDKs.
 
 include $(TOPDIR)/rules.mk
 
@@ -64,10 +65,11 @@ define Package/radio/install
 endef
 
 # default_postinst only "start"s the service, which procd ignores when it is
-# already running, so restart it on upgrade to run the new binary.
+# already running, so restart a running (old) one to run the new binary.
+# OpenWrt 24.10's opkg does not set PKG_UPGRADE, so check for the process.
 define Package/radio/postinst
 #!/bin/sh
-[ -n "$${PKG_UPGRADE}" ] && [ -z "$${IPKG_INSTROOT}" ] && /etc/init.d/radio restart
+[ -z "$${IPKG_INSTROOT}" ] && pidof radio >/dev/null && /etc/init.d/radio restart
 exit 0
 endef
 

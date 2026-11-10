@@ -32,10 +32,13 @@ Packages for every version are on the
 | `...-linux-x86_64.tar.gz` | Linux on x86_64 PCs and servers (static binary) |
 | `...-linux-aarch64.tar.gz` | Linux on 64-bit Arm (Raspberry Pi, servers) |
 | `...-windows-x86_64.zip` | Windows 10/11 x64 |
-| `...-openwrt-aarch64_cortex-a53.apk` (and `-a72`, `-a76`, `aarch64_generic`) | OpenWrt 25.x on 64-bit Arm routers (MediaTek Filogic, Qualcomm IPQ, ...) |
-| `...-openwrt-x86_64.apk` | OpenWrt 25.x on x86_64 |
-| `...-openwrt-mipsel_24kc.apk` | OpenWrt 25.x on MediaTek MT7621 / MT76x8 (ramips) |
-| `...-openwrt-mips_24kc.apk` | OpenWrt 25.x on Atheros / Qualcomm QCA (ath79) |
+| `...-openwrt-aarch64_cortex-a53.apk` (and `-a72`, `-a76`, `aarch64_generic`) | OpenWrt on 64-bit Arm routers (MediaTek Filogic, Qualcomm IPQ, ...) |
+| `...-openwrt-x86_64.apk` | OpenWrt on x86_64 |
+| `...-openwrt-mipsel_24kc.apk` | OpenWrt on MediaTek MT7621 / MT76x8 (ramips) |
+| `...-openwrt-mips_24kc.apk` | OpenWrt on Atheros / Qualcomm QCA (ath79) |
+
+Every OpenWrt package comes in two formats: `.apk` for OpenWrt 25.x and
+`.ipk` (same names) for OpenWrt 24.10.
 
 ### Linux
 
@@ -52,11 +55,19 @@ Unpack the zip and run `start.cmd`. It starts the radio on port 8123 with
 
 ### OpenWrt
 
-Find your router's package architecture with `cat /etc/apk/arch`, copy the
-matching package to the router and install it:
+Find your router's package architecture, copy the matching package to the
+router and install it.
+
+OpenWrt 25.x (apk; architecture: `cat /etc/apk/arch`):
 
 ```sh
 apk add --allow-untrusted /tmp/internet-radio-proxifier-*-openwrt-aarch64_cortex-a53.apk
+```
+
+OpenWrt 24.10 (opkg; architecture: `opkg print-architecture`, the last line):
+
+```sh
+opkg install /tmp/internet-radio-proxifier-*-openwrt-aarch64_cortex-a53.ipk
 ```
 
 The package installs `/usr/bin/radio` and a procd service that runs it as
@@ -145,6 +156,9 @@ SDK=/path/to/openwrt-sdk-25.12.5-x86-64_gcc-14.3.0_musl.Linux-x86_64 ./build.sh
   `fakeroot`; only the SDK's host tools are used. Packages are signed with
   the SDK's `private-key.pem` when it exists, so install them with
   `--allow-untrusted`.
+- The `.ipk` packages for OpenWrt 24.10 are made by
+  [openwrt/make-ipk.sh](openwrt/make-ipk.sh) with OpenWrt 24.10's own
+  `scripts/ipkg-build`, which `build.sh` downloads on first use.
 - To build inside the OpenWrt SDK instead (with OpenWrt's Rust), link
   [openwrt/radio](openwrt/radio) into the SDK's `package/` folder; see the
   comment at the top of its Makefile.
