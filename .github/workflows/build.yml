@@ -68,7 +68,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu gcc-mingw-w64-x86-64 \
-            zip zstd curl qemu-user-static
+            zip zstd curl
+          # Ubuntu 26 has the qemu user binaries in qemu-user; older ones in qemu-user-static
+          sudo apt-get install -y qemu-user || sudo apt-get install -y qemu-user-static
           rustup update stable
           rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-pc-windows-gnu
           rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
@@ -110,9 +112,10 @@ jobs:
       - name: Binaries start (version, player page, settings file)
         run: |
           V=$(tr -d ' \r\n' < VERSION)
-          for t in x86_64-unknown-linux-musl:qemu-x86_64-static aarch64-unknown-linux-musl:qemu-aarch64-static \
-                   mipsel-unknown-linux-musl:qemu-mipsel-static mips-unknown-linux-musl:qemu-mips-static; do
-            b=target/${t%%:*}/release/radio q=${t#*:}
+          for t in x86_64-unknown-linux-musl:x86_64 aarch64-unknown-linux-musl:aarch64 \
+                   mipsel-unknown-linux-musl:mipsel mips-unknown-linux-musl:mips; do
+            b=target/${t%%:*}/release/radio
+            q=$(command -v qemu-${t#*:} || command -v qemu-${t#*:}-static)
             file "$b"
             [ "$($q "$b" -V)" = "radio $V" ]
             rm -rf work && mkdir work
