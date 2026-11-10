@@ -7,7 +7,9 @@ const btnSave = document.querySelector('#btn-save');
 const btnRevert = document.querySelector('#btn-revert');
 const proxyInput = document.querySelector('#proxy-url');
 const autoplayInput = document.querySelector('#autoplay');
-let saved = {proxy: '', autoplay: true, stations: []};
+const randomInput = document.querySelector('#random');
+const randomStartInput = document.querySelector('#random-start');
+let saved = {proxy: '', autoplay: true, random_start: false, random: false, stations: []};
 
 function setMsg(text, kind) {
 	msg.textContent = text;
@@ -22,6 +24,8 @@ function current() {
 	return {
 		proxy: proxyInput.value.trim(),
 		autoplay: autoplayInput.checked,
+		random_start: randomStartInput.checked,
+		random: randomInput.checked,
 		stations: rows().map(r => ({
 			name: r.querySelector('.f-name').value.trim(),
 			url: r.querySelector('.f-url').value.trim(),
@@ -59,7 +63,10 @@ function addRow(st, focus) {
 
 function render(cfg) {
 	proxyInput.value = cfg.proxy || '';
-	autoplayInput.checked = cfg.autoplay !== false;
+	autoplayInput.checked = cfg.autoplay;
+	randomInput.checked = cfg.random;
+	randomStartInput.checked = cfg.random_start;
+	updateRandomStart();
 	list.replaceChildren();
 	cfg.stations.forEach(st => addRow(st));
 	refresh();
@@ -117,7 +124,14 @@ list.addEventListener('input', e => {
 	refresh();
 });
 proxyInput.addEventListener('input', () => { proxyInput.classList.remove('invalid'); refresh(); });
-autoplayInput.addEventListener('change', refresh);
+// "Start with a random station" only works with Autoplay.
+function updateRandomStart() {
+	randomStartInput.disabled = !autoplayInput.checked;
+	randomStartInput.closest('.sub-option').classList.toggle('off', !autoplayInput.checked);
+}
+autoplayInput.addEventListener('change', () => { updateRandomStart(); refresh(); });
+randomStartInput.addEventListener('change', refresh);
+randomInput.addEventListener('change', refresh);
 
 document.querySelector('#btn-proxy-failing').addEventListener('click', async e => {
 	if (!proxyInput.value.trim()) {

@@ -1,14 +1,15 @@
-# Build, test and release.
+# Build, test and release. Runs only when asked for: ordinary pushes do not
+# start it (test locally with build.sh first).
 #
-#   push / pull request   (not when only *.md files changed)
-#                         build all packages (build.sh), run the unit tests,
-#                         start every binary (MIPS and aarch64 under qemu)
-#                         and the Windows package on real Windows; keep the
-#                         packages as workflow artifacts
-#   VERSION changed       push to main with a VERSION that has no tag
-#                         v<VERSION> yet (or a push of that tag): the same,
-#                         then publish the packages as GitHub Release
-#                         v<VERSION> (the tag is created on the pushed commit)
+#   VERSION changed       push to main that changes VERSION: build all
+#                         packages (build.sh), run the unit tests, start every
+#                         binary (MIPS and aarch64 under qemu) and the Windows
+#                         package on real Windows, then publish the packages
+#                         as GitHub Release v<VERSION> (when that tag does not
+#                         exist yet; it is created on the pushed commit)
+#   manual run            Actions tab or `gh workflow run build.yml`: the same
+#                         build and tests, packages kept as workflow
+#                         artifacts, no release
 #
 # Packages (dist/):
 #   internet-radio-proxifier-<V>-linux-x86_64.tar.gz     static (musl)
@@ -20,9 +21,8 @@ name: Build/release
 
 on:
   push:
-    paths-ignore: ['**.md']
-  pull_request:
-    paths-ignore: ['**.md']
+    branches: [main]
+    paths: [VERSION]
   workflow_dispatch:
 
 permissions:

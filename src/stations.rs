@@ -3,6 +3,8 @@
 //!   password  = secret        (settings page password; user name "admin")
 //!   proxy_url = socks5h://user:pass@192.168.1.10:1080
 //!   autoplay  = true          (start playing when the player page opens)
+//!   random_start = false      (with autoplay: start with a random station)
+//!   random    = false         (Next / Previous pick a random station)
 //!
 //!   [Station name]
 //!   url       = https://stream.example.com/live.mp3
@@ -52,11 +54,15 @@ pub struct Settings {
     pub password: String,
     /// Start playing as soon as the player page opens.
     pub autoplay: bool,
+    /// With autoplay: start with a random station instead of the last one.
+    pub random_start: bool,
+    /// Next / Previous pick a random station instead of the neighbouring one.
+    pub random: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { stations: Vec::new(), proxy: String::new(), password: String::new(), autoplay: true }
+        Settings { stations: Vec::new(), proxy: String::new(), password: String::new(), autoplay: true, random_start: false, random: false }
     }
 }
 
@@ -65,6 +71,8 @@ pub fn parse(text: &str) -> Settings {
     let mut proxy = String::new();
     let mut password = String::new();
     let mut autoplay = true;
+    let mut random_start = false;
+    let mut random = false;
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
@@ -81,12 +89,14 @@ pub fn parse(text: &str) -> Settings {
             (None, "proxy_url") => proxy = value,
             (None, "password") => password = value,
             (None, "autoplay") => autoplay = parse_bool(&value),
+            (None, "random_start") => random_start = parse_bool(&value),
+            (None, "random") => random = parse_bool(&value),
             (Some(st), "url") => st.url = value,
             (Some(st), "use_proxy") => st.use_proxy = parse_bool(&value),
             _ => {}
         }
     }
-    Settings { stations: list, proxy: proxy.trim().to_string(), password, autoplay }
+    Settings { stations: list, proxy: proxy.trim().to_string(), password, autoplay, random_start, random }
 }
 
 pub fn load(path: &str) -> io::Result<Settings> {
@@ -138,7 +148,10 @@ pub fn render(s: &Settings) -> String {
     if !s.proxy.is_empty() {
         out += &format!("proxy_url = {}\n", ini_quote(&s.proxy));
     }
-    out += &format!("autoplay  = {}\n\n", s.autoplay);
+    out += &format!(
+        "autoplay     = {}\nrandom_start = {}\nrandom       = {}\n\n",
+        s.autoplay, s.random_start, s.random
+    );
     for st in &s.stations {
         out += &format!("[{}]\n", st.name);
         if st.use_proxy {
@@ -223,7 +236,10 @@ mod tests {
         assert_eq!(s.password, "");
         assert!(s.autoplay);
         assert!(!parse("autoplay = false\n[A]\nurl = http://a\n").autoplay);
-        let off = Settings { autoplay: false, ..s.clone() };
+        assert!(!s.random);
+        assert!(parse("random = yes\n[A]\nurl = http://a\n").random);
+        assert!(parse("random_start = true\n[A]\nurl = http://a\n").random_start);
+        let off = Settings { autoplay: false, random_start: true, random: true, ..s.clone() };
         assert_eq!(parse(&render(&off)), off);
         let list = &s.stations;
         assert_eq!(list.len(), 4);

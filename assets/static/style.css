@@ -50,12 +50,12 @@ a {
 	text-shadow: 0 0 0 var(--color);
 }
 
-[data-status="connected"] {
+[data-status="ok"] {
 	color: green;
 }
 
-[data-status="disconnected"] {
-	color: red;
+[data-status="bad"] {
+	color: #ff6b6b;
 }
 
 /* CSS */

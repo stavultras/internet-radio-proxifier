@@ -103,6 +103,10 @@ body.settings > * { margin-bottom: 16px; }
 .proxy-box label.check { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; margin: 0; }
 .settings .proxy-box label.check input { width: auto; accent-color: var(--color); margin: 0; }
 .proxy-box .hint { font-size: 12px; opacity: .8; margin: 6px 0 0; }
+.proxy-box .hint + label.check, .sub-option + label.check { margin-top: 14px; }
+/* an option that depends on the one above it */
+.sub-option { margin: 10px 0 0 26px; }
+.sub-option.off { opacity: .45; }
 .proxy-toggle {
 	display: inline-flex;
 	align-items: center;

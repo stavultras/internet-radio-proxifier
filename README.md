@@ -13,11 +13,13 @@ and has since been rewritten in Rust.
 
 - Player page: next / previous / random station, a station picker, volume
   with percentage, the current song title
-- Remembers the last station per browser; optional autoplay
+- Remembers the last station per browser; optional autoplay; optional
+  random mode for Next / Previous
 - Skips stations that stop working
 - Song titles are fetched only for stations someone is listening to
 - Settings page: add, edit, test and drag to reorder stations, set the
-  proxy, choose per station whether it goes through the proxy, autoplay
+  proxy, choose per station whether it goes through the proxy, autoplay,
+  random
 - Installable as a PWA; Media Session support (lock screen, headset buttons)
 - One static binary of about 2 MB using a few MB of RAM; no runtime
   dependencies besides CA certificates for https stations
@@ -108,7 +110,9 @@ The player is at `http://ADDRESS/`, the settings page at `http://ADDRESS/setting
 # backticks if it contains # or ; (password = `pa#ss`).
 password  = secret
 proxy_url = socks5h://user:password@192.168.1.10:1080
-autoplay  = true
+autoplay     = true
+random_start = false
+random       = false
 
 [Station name]
 url = https://stream.example.com/live.mp3
@@ -121,6 +125,10 @@ use_proxy = true
 - `proxy_url`: `socks5://`, `socks5h://` (DNS on the proxy), `http://` or
   `https://`; without a port, 1080 is used for SOCKS
 - `use_proxy`: this station goes through the proxy
+- `random_start`: with `autoplay`, start with a random station instead of
+  the one played last in this browser
+- `random`: Next and Previous jump to a random station instead of the
+  neighbouring one
 - `autoplay`: start playing as soon as the player page opens (browsers may
   still require one click first)
 - The settings page rewrites the file when you save, keeping the password.
@@ -165,11 +173,14 @@ SDK=/path/to/openwrt-sdk-25.12.5-x86-64_gcc-14.3.0_musl.Linux-x86_64 ./build.sh
 
 ## Releases
 
-[.github/workflows/build.yml](.github/workflows/build.yml) builds and tests
-every push and pull request (unit tests, every binary started under qemu,
-the Windows package on a Windows runner). To release, change
-[VERSION](VERSION) and push to `main`: when there is no tag `v<VERSION>`
-yet, the packages are published as GitHub Release `v<VERSION>`.
+Test locally with `build.sh` first; GitHub Actions does not run on ordinary
+pushes. To release, change [VERSION](VERSION) and push to `main`:
+[.github/workflows/build.yml](.github/workflows/build.yml) then builds and
+tests everything (unit tests, every binary started under qemu, the Windows
+package on a Windows runner) and, when there is no tag `v<VERSION>` yet,
+publishes the packages as GitHub Release `v<VERSION>`. A test run without a
+release can be started by hand from the Actions tab (`gh workflow run
+build.yml`).
 
 ## License
 

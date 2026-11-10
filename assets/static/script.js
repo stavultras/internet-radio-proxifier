@@ -9,6 +9,14 @@ if ('serviceWorker' in navigator) {
 
 const status = document.querySelector('#status');
 
+// The status line tells what the player is doing (connecting to a station,
+// playing, buffering, paused, a station is unavailable). kind: '' (neutral),
+// 'ok' or 'bad'.
+function setStatus(text, kind = '') {
+	status.innerText = text;
+	status.dataset.status = kind;
+}
+
 // Htmx:wsConnecting
 // htmx:wsError
 
@@ -22,31 +30,28 @@ let elt;
 //	}
 // });
 //
-document.body.addEventListener('htmx:wsClose', event => {
-	console.log('disconnected');
-	status.innerText = 'Disconnected';
-	status.dataset.status = 'disconnected';
+// The websocket to this server only matters to the user when it is gone
+// (station changes and titles stop working).
+let serverLost = false;
+document.body.addEventListener('htmx:wsClose', () => {
+	serverLost = true;
+	setStatus('No connection to the radio server, reconnecting…', 'bad');
 });
 
 document.body.addEventListener('htmx:wsOpen', event => {
-	console.log('connected');
-
 	socket = event.detail.socketWrapper;
 	elt = event.detail.elt;
-
-	status.innerText = 'Connected';
-	status.dataset.status = 'connected';
-});
-
-document.body.addEventListener('htmx:wsClose', event => {
-	console.log('disconnected');
-	status.innerText = 'Disconnected';
-	status.dataset.status = 'disconnected';
+	if (serverLost) {
+		serverLost = false;
+		showPlayerState();
+	}
 });
 
 const player = document.querySelector('#audio-player');
 // Settings page "Autoplay": start playing as soon as the page opens.
 const AUTOPLAY = player.hasAttribute('data-autoplay');
+// Settings page "Start with a random station" (only together with autoplay).
+const RANDOM_START = player.hasAttribute('data-random-start');
 
 // Workaround to prevent player from playing when replaced
 let audioSource = document.querySelector('#audio-source');
@@ -57,22 +62,30 @@ let playAfterSwitch = false;
 // the page, so if this is refused, start on the first click, tap or key.
 const GESTURE_EVENTS = ['pointerdown', 'keydown', 'touchstart'];
 let waitingForGesture = false;
+// Auto-skip (below) is on from here: a station that cannot be played is
+// skipped even when nothing has played yet. Only the browser's autoplay
+// block turns it off until the first click.
 function startPlayback() {
+	autoSkipActive = true;
+	lastProgressAt = Date.now();
+	lastTime = player.currentTime;
 	player.play().catch(err => {
-		if (err && err.name === 'NotAllowedError') startOnFirstGesture();
+		if (err && err.name === 'NotAllowedError') {
+			autoSkipActive = false;
+			startOnFirstGesture();
+		}
 	});
 }
 function startOnFirstGesture() {
 	if (waitingForGesture) return;
 	waitingForGesture = true;
 	document.body.classList.add('needs-gesture');
-	status.innerText = 'Click anywhere to start playing';
+	setStatus('Click anywhere to start playing');
 	const go = () => {
 		for (const ev of GESTURE_EVENTS) document.removeEventListener(ev, go, true);
 		waitingForGesture = false;
 		document.body.classList.remove('needs-gesture');
-		status.innerText = socket ? 'Connected' : '';
-		player.play().catch(() => {});
+		startPlayback();
 	};
 	for (const ev of GESTURE_EVENTS) document.addEventListener(ev, go, true);
 }
@@ -192,6 +205,34 @@ player.addEventListener('pause', () => {
 	isPlaying = false;
 });
 
+// Status line from what the audio element does. failedStation: the station
+// that was just skipped, mentioned until another one plays.
+let failedStation = '';
+// Set when auto-skip gives up; shown instead of "Paused" until playing again.
+let gaveUp = '';
+function showPlayerState() {
+	if (waitingForGesture) return;
+	if (gaveUp) setStatus(gaveUp, 'bad');
+	else if (player.paused) setStatus('Paused');
+	else if (player.readyState >= 3) setStatus('Playing', 'ok');
+	else connectingStatus();
+}
+function connectingStatus() {
+	const name = currentStationName();
+	const failed = failedStation ? `${failedStation} is unavailable. ` : '';
+	setStatus(`${failed}Connecting to ${name || 'the station'}…`, failedStation ? 'bad' : '');
+}
+player.addEventListener('play', () => {
+	gaveUp = '';
+	if (!waitingForGesture) connectingStatus();
+});
+player.addEventListener('playing', () => {
+	failedStation = '';
+	setStatus('Playing', 'ok');
+});
+player.addEventListener('waiting', () => { if (!player.paused) setStatus('Buffering…'); });
+player.addEventListener('pause', showPlayerState);
+
 playPauseButton.addEventListener('click', () => {
 	if (isPlaying) {
 		player.pause();
@@ -203,11 +244,10 @@ playPauseButton.addEventListener('click', () => {
 });
 
 // Auto-skip: if the current station errors, ends, or stops delivering audio,
-// move on to the next station. Only active once playback has started at least
-// once (so a browser autoplay block doesn't cause skipping) and while the user
-// hasn't paused. Gives up after one full round of failing stations.
+// move on to the next station. Active while playback is wanted (see
+// startPlayback) and the user hasn't paused. Gives up after one full round
+// of failing stations.
 const SKIP_STALL_MS = 12000;
-const SKIP_MAX_IN_A_ROW = 12;
 let autoSkipActive = false;
 let lastTime = 0;
 let lastProgressAt = Date.now();
@@ -223,7 +263,12 @@ playPauseButton.addEventListener('click', () => {
 });
 for (const id of ['#button-ws-next', '#button-ws-prev']) {
 	document.querySelector(id).addEventListener('click', e => {
-		if (e.isTrusted) skipsInARow = 0; // manual switch resets the give-up counter
+		if (e.isTrusted) {
+			skipsInARow = 0; // manual switch resets the give-up counter
+			failedStation = '';
+		}
+		// Next / previous (also from auto-skip) plays the new station.
+		playAfterSwitch = true;
 		lastProgressAt = Date.now();
 		lastTime = 0;
 	});
@@ -231,14 +276,18 @@ for (const id of ['#button-ws-next', '#button-ws-prev']) {
 
 function skipStation(reason) {
 	if (!autoSkipActive) return;
-	if (skipsInARow >= SKIP_MAX_IN_A_ROW) {
-		status.innerText = 'No working station found';
+	if (skipsInARow >= Math.max(stationNames.length, 1)) {
+		gaveUp = 'No station can be played right now. Is the internet connection working?';
 		autoSkipActive = false;
+		failedStation = '';
+		player.pause();
+		showPlayerState();
 		return;
 	}
 	skipsInARow++;
 	console.log('auto-skip:', reason, currentSource);
-	status.innerText = 'Station unavailable, skipping…';
+	failedStation = currentStationName();
+	setStatus(`${failedStation || 'This station'} is unavailable, trying the next one…`, 'bad');
 	lastProgressAt = Date.now();
 	lastTime = 0;
 	document.querySelector('#button-ws-next').click();
@@ -254,10 +303,7 @@ setInterval(() => {
 	if (player.currentTime !== lastTime) {
 		if (player.currentTime > lastTime) {
 			if (!goodSince) goodSince = now;
-			if (now - goodSince > 5000 && skipsInARow) {
-				skipsInARow = 0;
-				status.innerText = 'Connected';
-			}
+			if (now - goodSince > 5000 && skipsInARow) skipsInARow = 0;
 		}
 		lastTime = player.currentTime;
 		lastProgressAt = now;
@@ -380,12 +426,14 @@ let wantedStation = null;
 try { wantedStation = localStorage.getItem(LAST_STATION_KEY); } catch (e) {}
 let firstConnect = true;
 
-// Don't start the default station first if another one will be restored.
-if (wantedStation) {
+// Don't start the default station first if another one will be restored
+// or a random one picked.
+if (wantedStation || RANDOM_START) {
 	player.pause();
 } else if (AUTOPLAY) {
 	startPlayback(); // play the default station as soon as the page opens
 }
+if (!AUTOPLAY) setStatus('Press play to start');
 
 let stationNames = [];
 async function loadStationNames() {
@@ -394,6 +442,8 @@ async function loadStationNames() {
 	} catch (e) {}
 	return stationNames;
 }
+// The station count limits auto-skip to one round.
+loadStationNames();
 
 function saveStation(name) {
 	if (!name) return;
@@ -418,14 +468,17 @@ wsContainer.addEventListener('htmx:wsAfterMessage', async () => {
 document.body.addEventListener('htmx:wsOpen', async () => {
 	const restoring = firstConnect;
 	let index = -1;
-	if (wantedStation) {
+	if (restoring && RANDOM_START) {
+		const names = await loadStationNames();
+		index = Math.floor(Math.random() * names.length);
+	} else if (wantedStation) {
 		index = (await loadStationNames()).indexOf(wantedStation);
 	}
 	if (index > 0) {
 		if (restoring) playAfterSwitch = AUTOPLAY;
 		socket.send(JSON.stringify({action: 'select', index}), elt);
-	} else if (restoring && wantedStation && AUTOPLAY) {
-		// Saved station is station 0 or no longer exists: play the default.
+	} else if (restoring && (wantedStation || RANDOM_START) && AUTOPLAY) {
+		// Station 0 was picked, or the saved one no longer exists: play the default.
 		startPlayback();
 	}
 	firstConnect = false;

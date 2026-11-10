@@ -41,6 +41,10 @@ struct App {
     proxy: RwLock<(String, Option<Proxy>)>,
     /// Start playing as soon as the player page opens.
     autoplay: std::sync::atomic::AtomicBool,
+    /// With autoplay: start with a random station.
+    random_start: std::sync::atomic::AtomicBool,
+    /// Next / Previous pick a random station.
+    random: std::sync::atomic::AtomicBool,
     stations_file: String,
     sessions: Mutex<HashMap<u64, Session>>,
     /// Last known song title per stream URL.
@@ -229,6 +233,16 @@ struct WsMsg {
     index: i64,
 }
 
+/// A random number below n (n > 0), from std's per-process random hash keys
+/// and the clock; no crate needed for picking a station.
+fn random_below(n: usize) -> usize {
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    h.write_u128(nanos);
+    (h.finish() % n as u64) as usize
+}
+
 fn handle_ws_message(app: &Shared, id: u64, text: &str) {
     let list = app.stations();
     let Ok(msg) = serde_json::from_str::<WsMsg>(text) else {
@@ -240,6 +254,11 @@ fn handle_ws_message(app: &Shared, id: u64, text: &str) {
         let Some(s) = sessions.get_mut(&id) else { return };
         let cur = if s.station < list.len() { s.station } else { 0 };
         let next = match msg.action.as_str() {
+            "next" | "previous" if app.random.load(Ordering::Relaxed) && list.len() > 1 => {
+                // any station but the current one
+                let r = random_below(list.len() - 1);
+                if r >= cur { r + 1 } else { r }
+            }
             "next" => (cur + 1) % list.len(),
             "previous" => (cur + list.len() - 1) % list.len(),
             "select" => {
@@ -256,10 +275,11 @@ fn handle_ws_message(app: &Shared, id: u64, text: &str) {
         s.station = next;
         next
     };
-    app.send(id, App::player_html(station));
+    // Name first: the player shows it as soon as the new source starts.
     if let Some(info) = app.station_info(&list, station) {
         app.send(id, info);
     }
+    app.send(id, App::player_html(station));
     refresh_async(app, &list, station);
 }
 
@@ -344,7 +364,11 @@ async fn static_file(Path(path): Path<String>) -> Response {
 }
 
 async fn index(State(app): State<Shared>) -> Html<String> {
-    let autoplay = if app.autoplay.load(Ordering::Relaxed) { "autoplay data-autoplay" } else { "" };
+    let autoplay = match (app.autoplay.load(Ordering::Relaxed), app.random_start.load(Ordering::Relaxed)) {
+        (true, true) => "autoplay data-autoplay data-random-start",
+        (true, false) => "autoplay data-autoplay",
+        _ => "",
+    };
     Html(INDEX.replace("{{url}}", &esc(&App::station_url(0))).replace("{{autoplay}}", autoplay))
 }
 
@@ -446,6 +470,8 @@ struct ConfigJson {
     #[serde(default)]
     proxy: String,
     autoplay: bool,
+    random_start: bool,
+    random: bool,
     #[serde(default)]
     stations: Vec<StationJson>,
 }
@@ -482,6 +508,8 @@ fn config_json(app: &App) -> ConfigJson {
     ConfigJson {
         proxy: mask_proxy(&app.proxy_raw()),
         autoplay: app.autoplay.load(Ordering::Relaxed),
+        random_start: app.random_start.load(Ordering::Relaxed),
+        random: app.random.load(Ordering::Relaxed),
         stations: list
             .iter()
             .map(|s| StationJson { name: s.name.clone(), url: s.url.clone(), use_proxy: s.use_proxy })
@@ -559,7 +587,10 @@ async fn settings_put(State(app): State<Shared>, headers: HeaderMap, body: Bytes
         Ok(s) => s.password,
         Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, format!("cannot read {}: {e}", app.stations_file)),
     };
-    let settings = stations::Settings { stations: list, proxy: raw, password, autoplay: input.autoplay };
+    let settings = stations::Settings { stations: list, proxy: raw, password, autoplay: input.autoplay,
+        random_start: input.random_start,
+        random: input.random,
+    };
     if let Err(e) = stations::save(&app.stations_file, &settings) {
         eprintln!("Saving settings failed: {e}");
         return json_error(
@@ -568,8 +599,10 @@ async fn settings_put(State(app): State<Shared>, headers: HeaderMap, body: Bytes
         );
     }
     let has_proxy = parsed.is_some();
-    let stations::Settings { stations: list, proxy: raw, autoplay, .. } = settings;
+    let stations::Settings { stations: list, proxy: raw, autoplay, random_start, random, .. } = settings;
     app.autoplay.store(autoplay, Ordering::Relaxed);
+    app.random_start.store(random_start, Ordering::Relaxed);
+    app.random.store(random, Ordering::Relaxed);
     *app.proxy.write().unwrap() = (raw, parsed);
     let new = Arc::new(list);
     let old = std::mem::replace(&mut *app.stations.write().unwrap(), new.clone());
@@ -592,8 +625,8 @@ fn remap_sessions(app: &App, old: &[Station], cur: &[Station]) {
         s.station = new_idx;
         // The relayed URL contains the index, so the player needs the new one.
         if found.is_none() || new_idx != idx {
-            let _ = s.tx.send(App::player_html(new_idx));
             let _ = s.tx.send(App::info_html(&cur[new_idx], &app.cached_title(&cur[new_idx].url)));
+            let _ = s.tx.send(App::player_html(new_idx));
         }
     }
 }
@@ -780,7 +813,7 @@ fn main() {
         Ok(false) => {}
         Err(e) => fail(format!("Cannot create {stations_file}: {e}")),
     }
-    let stations::Settings { stations: list, proxy: proxy_raw, password, autoplay } =
+    let stations::Settings { stations: list, proxy: proxy_raw, password, autoplay, random_start, random } =
         stations::load(&stations_file).unwrap_or_else(|e| fail(format!("Cannot read {stations_file}: {e}")));
     if list.is_empty() {
         fail(format!("No stations found in {stations_file}"));
@@ -798,6 +831,8 @@ fn main() {
         stations: RwLock::new(Arc::new(list)),
         proxy: RwLock::new((proxy_raw, proxy)),
         autoplay: std::sync::atomic::AtomicBool::new(autoplay),
+        random_start: std::sync::atomic::AtomicBool::new(random_start),
+        random: std::sync::atomic::AtomicBool::new(random),
         stations_file,
         sessions: Mutex::new(HashMap::new()),
         titles: Mutex::new(HashMap::new()),
