@@ -344,6 +344,8 @@ macro_rules! assets {
 assets! {
     "settings.css" => "text/css; charset=utf-8",
     "settings.js" => "text/javascript; charset=utf-8",
+    "htmx.min.js" => "text/javascript; charset=utf-8",
+    "htmx-ws.js" => "text/javascript; charset=utf-8",
     "icon-192.png" => "image/png",
     "icon-512.png" => "image/png",
     "manifest.webmanifest" => "application/manifest+json",
@@ -391,7 +393,8 @@ async fn station_stream(State(app): State<Shared>, Path(index): Path<String>) ->
         return StatusCode::NOT_FOUND.into_response();
     };
     let proxy = app.proxy_for(st);
-    let resp = match timeout(Duration::from_secs(20), http::get(&st.url, proxy.as_ref(), &[])).await {
+    // Short enough that the player moves on quickly from a dead station.
+    let resp = match timeout(Duration::from_secs(10), http::get(&st.url, proxy.as_ref(), &[])).await {
         Ok(Ok(r)) if (200..300).contains(&r.status) => r,
         Ok(Ok(r)) => {
             eprintln!("{}: server answered {}", st.name, r.status_text);
@@ -402,7 +405,7 @@ async fn station_stream(State(app): State<Shared>, Path(index): Path<String>) ->
             return StatusCode::BAD_GATEWAY.into_response();
         }
         Err(_) => {
-            eprintln!("{}: no answer within 20 s", st.name);
+            eprintln!("{}: no answer within 10 s", st.name);
             return StatusCode::BAD_GATEWAY.into_response();
         }
     };

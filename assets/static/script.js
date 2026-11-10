@@ -91,10 +91,16 @@ function startOnFirstGesture() {
 }
 
 const wsContainer = document.querySelector('#ws-container');
+// A station name that arrives while connecting goes into the status line.
+wsContainer.addEventListener('htmx:wsAfterMessage', () => {
+	if (!stationStarted && !player.paused && !waitingForGesture && !gaveUp) connectingStatus();
+});
+
 wsContainer.addEventListener('htmx:wsAfterMessage', event => {
 	audioSource = document.querySelector('#audio-source');
 	if (currentSource != audioSource.src) {
 		currentSource = audioSource.src;
+		stationStarted = false;
 		player.load();
 		if (playAfterSwitch) {
 			playAfterSwitch = false;
@@ -208,6 +214,9 @@ player.addEventListener('pause', () => {
 // Status line from what the audio element does. failedStation: the station
 // that was just skipped, mentioned until another one plays.
 let failedStation = '';
+// The current station has delivered audio since it was switched to; until
+// then "waiting" means it is still connecting, not buffering.
+let stationStarted = false;
 // Set when auto-skip gives up; shown instead of "Paused" until playing again.
 let gaveUp = '';
 function showPlayerState() {
@@ -227,10 +236,15 @@ player.addEventListener('play', () => {
 	if (!waitingForGesture) connectingStatus();
 });
 player.addEventListener('playing', () => {
+	stationStarted = true;
 	failedStation = '';
 	setStatus('Playing', 'ok');
 });
-player.addEventListener('waiting', () => { if (!player.paused) setStatus('Buffering…'); });
+player.addEventListener('waiting', () => {
+	if (player.paused || waitingForGesture) return;
+	if (stationStarted) setStatus('Buffering…');
+	else connectingStatus();
+});
 player.addEventListener('pause', showPlayerState);
 
 playPauseButton.addEventListener('click', () => {
@@ -290,7 +304,9 @@ function skipStation(reason) {
 	setStatus(`${failedStation || 'This station'} is unavailable, trying the next one…`, 'bad');
 	lastProgressAt = Date.now();
 	lastTime = 0;
-	document.querySelector('#button-ws-next').click();
+	if (!socket) return; // the stall check tries again once reconnected
+	playAfterSwitch = true;
+	socket.send(JSON.stringify({action: 'next'}), elt);
 }
 
 // <source> errors don't bubble, so listen in the capture phase.
