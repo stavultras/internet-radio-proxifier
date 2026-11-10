@@ -7,6 +7,9 @@
 #                         package on real Windows, then publish the packages
 #                         as GitHub Release v<VERSION> (when that tag does not
 #                         exist yet; it is created on the pushed commit)
+#   tag v<VERSION> pushed the same build and tests, then publish the packages
+#                         as GitHub Release v<VERSION> (to release a version
+#                         again: delete its release and tag, push the tag)
 #   manual run            Actions tab or `gh workflow run build.yml`: the same
 #                         build and tests, packages kept as workflow
 #                         artifacts, no release
@@ -23,6 +26,7 @@ on:
   push:
     branches: [main]
     paths: [VERSION]
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:

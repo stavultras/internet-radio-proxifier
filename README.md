@@ -178,7 +178,9 @@ pushes. To release, change [VERSION](VERSION) and push to `main`:
 [.github/workflows/build.yml](.github/workflows/build.yml) then builds and
 tests everything (unit tests, every binary started under qemu, the Windows
 package on a Windows runner) and, when there is no tag `v<VERSION>` yet,
-publishes the packages as GitHub Release `v<VERSION>`. A test run without a
+publishes the packages as GitHub Release `v<VERSION>`. To publish a version
+again, delete its release and tag on GitHub and push the tag `v<VERSION>`
+(`git tag v0.1 && git push origin v0.1`). A test run without a
 release can be started by hand from the Actions tab (`gh workflow run
 build.yml`).
 
