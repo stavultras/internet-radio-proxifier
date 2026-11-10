@@ -72,6 +72,23 @@ OpenWrt 24.10 (opkg; architecture: `opkg print-architecture`, the last line):
 opkg install /tmp/internet-radio-proxifier-*-openwrt-aarch64_cortex-a53.ipk
 ```
 
+#### ImageBuilder
+
+To build the package into a firmware image, put it into the ImageBuilder's
+`packages/` folder and add `internet-radio-proxifier` to `PACKAGES`.
+
+OpenWrt 25.x: the apk must have its standard file name,
+`internet-radio-proxifier-<version>-r1.apk`. The release file has the
+architecture in its name, which the ImageBuilder does not find ("package
+mentioned in index not found"), so rename it:
+
+```sh
+mv internet-radio-proxifier-0.1-openwrt-aarch64_cortex-a53.apk packages/internet-radio-proxifier-0.1-r1.apk
+```
+
+OpenWrt 24.10: the ipk works under its release name; the standard one would
+be `internet-radio-proxifier_<version>-r1_<arch>.ipk`.
+
 The package installs `/usr/bin/internet-radio-proxifier` and a procd service that runs it as
 user `nobody` on port 8123:
 
