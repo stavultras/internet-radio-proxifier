@@ -48,7 +48,7 @@ Every OpenWrt package comes in two formats: `.apk` for OpenWrt 25.x and
 ```sh
 tar xzf internet-radio-proxifier-*-linux-x86_64.tar.gz
 cd internet-radio-proxifier-*/
-./internet-radio-proxifier -h :: -p 8123 -c settings.ini
+./internet-radio-proxifier -a :: -p 8123 -c settings.ini
 ```
 
 ### Windows
@@ -93,7 +93,7 @@ be `internet-radio-proxifier_<version>-r1_<arch>.ipk`.
 The package installs `/usr/bin/internet-radio-proxifier` and a procd service that runs it as
 user `nobody` on port 8123:
 
-- `/etc/config/internet-radio-proxifier`: `enabled`, `host` (default `::`, all
+- `/etc/config/internet-radio-proxifier`: `enabled`, `address` (default `::`, all
   interfaces), `port` (default `8123`), `config` (default
   `/etc/internet-radio-proxifier/settings.ini`)
 - `/etc/internet-radio-proxifier/settings.ini`: created with example stations on first start,
@@ -109,20 +109,20 @@ Then open `http://<router>:8123/`.
 ## Usage
 
 ```
-internet-radio-proxifier -h HOST -p PORT [-c SETTINGS_FILE]
+internet-radio-proxifier -a ADDRESS -p PORT [-c SETTINGS_FILE]
 
-  -h, --host HOST        address to listen on: :: (all interfaces, IPv6 and
+  -a, --address ADDRESS  address to listen on: :: (all interfaces, IPv6 and
                          IPv4), 0.0.0.0 (all IPv4 interfaces) or one address
                          or host name, e.g. 192.168.1.1 or localhost
   -p, --port PORT        port to listen on, e.g. 8123
   -c, --config FILE      settings file (default: /etc/internet-radio-proxifier/settings.ini, on
                          Windows settings.ini); created with example stations
                          if it does not exist
-      --help             show this help
+  -h, --help             show this help
   -V, --version          show the version
 ```
 
-The player is at `http://HOST:PORT/`, the settings page at `http://HOST:PORT/settings`.
+The player is at `http://ADDRESS:PORT/`, the settings page at `http://ADDRESS:PORT/settings`.
 
 ## Settings file
 
