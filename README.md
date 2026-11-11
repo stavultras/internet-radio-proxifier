@@ -48,7 +48,7 @@ Every OpenWrt package comes in two formats: `.apk` for OpenWrt 25.x and
 ```sh
 tar xzf internet-radio-proxifier-*-linux-x86_64.tar.gz
 cd internet-radio-proxifier-*/
-./internet-radio-proxifier -h :8123 -c settings.ini
+./internet-radio-proxifier -h :: -p 8123 -c settings.ini
 ```
 
 ### Windows
@@ -93,8 +93,9 @@ be `internet-radio-proxifier_<version>-r1_<arch>.ipk`.
 The package installs `/usr/bin/internet-radio-proxifier` and a procd service that runs it as
 user `nobody` on port 8123:
 
-- `/etc/config/internet-radio-proxifier`: `enabled`, `address` (default `:8123`), `config`
-  (default `/etc/internet-radio-proxifier/settings.ini`)
+- `/etc/config/internet-radio-proxifier`: `enabled`, `host` (default `::`, all
+  interfaces), `port` (default `8123`), `config` (default
+  `/etc/internet-radio-proxifier/settings.ini`)
 - `/etc/internet-radio-proxifier/settings.ini`: created with example stations on first start,
   kept across sysupgrade
 
@@ -108,9 +109,12 @@ Then open `http://<router>:8123/`.
 ## Usage
 
 ```
-internet-radio-proxifier -h ADDRESS [-c SETTINGS_FILE]
+internet-radio-proxifier -h HOST -p PORT [-c SETTINGS_FILE]
 
-  -h, --host ADDRESS     listen address, e.g. :8123 (all interfaces) or 192.168.1.1:8123
+  -h, --host HOST        address to listen on: :: (all interfaces, IPv6 and
+                         IPv4), 0.0.0.0 (all IPv4 interfaces) or one address
+                         or host name, e.g. 192.168.1.1 or localhost
+  -p, --port PORT        port to listen on, e.g. 8123
   -c, --config FILE      settings file (default: /etc/internet-radio-proxifier/settings.ini, on
                          Windows settings.ini); created with example stations
                          if it does not exist
@@ -118,7 +122,7 @@ internet-radio-proxifier -h ADDRESS [-c SETTINGS_FILE]
   -V, --version          show the version
 ```
 
-The player is at `http://ADDRESS/`, the settings page at `http://ADDRESS/settings`.
+The player is at `http://HOST:PORT/`, the settings page at `http://HOST:PORT/settings`.
 
 ## Settings file
 

@@ -1,7 +1,7 @@
 //! Web radio player: streams internet radio stations through the router,
 //! with a station manager and an optional proxy per station.
 //!
-//! Usage: internet-radio-proxifier -h ADDRESS [-c SETTINGS_FILE]
+//! Usage: internet-radio-proxifier -h HOST -p PORT [-c SETTINGS_FILE]
 //! The settings file holds the proxy, the station list and the settings
 //! page password.
 
@@ -780,9 +780,12 @@ const EXAMPLE_SETTINGS: &str = include_str!("../settings.example.ini");
 
 fn usage() -> String {
     format!(
-        "Usage: internet-radio-proxifier -h ADDRESS [-c SETTINGS_FILE]
+        "Usage: internet-radio-proxifier -h HOST -p PORT [-c SETTINGS_FILE]
 
-  -h, --host ADDRESS     listen address, e.g. :8123 (all interfaces) or 192.168.1.1:8123
+  -h, --host HOST        address to listen on: :: (all interfaces, IPv6 and
+                         IPv4), 0.0.0.0 (all IPv4 interfaces) or one address
+                         or host name, e.g. 192.168.1.1 or localhost
+  -p, --port PORT        port to listen on, e.g. 8123
   -c, --config FILE      settings file (default: {DEFAULT_CONFIG}); created
                          with example stations if it does not exist
       --help             show this help
@@ -793,17 +796,18 @@ page password (password = ..., user name admin)."
     )
 }
 
-/// Returns (address, station file); exits on bad arguments.
-fn parse_args(mut args: impl Iterator<Item = String>) -> (String, String) {
+/// Returns (host, port, station file); exits on bad arguments.
+fn parse_args(mut args: impl Iterator<Item = String>) -> (String, u16, String) {
     let bad = |msg: &str| -> ! { fail(format!("internet-radio-proxifier: {msg}\n\n{}", usage())) };
-    let (mut address, mut config) = (None, None);
+    let (mut host, mut port, mut config) = (None, None, None);
     while let Some(arg) = args.next() {
         let (flag, inline) = match arg.split_once('=') {
             Some((f, v)) if f.starts_with("--") => (f.to_string(), Some(v.to_string())),
             _ => (arg.clone(), None),
         };
         let slot = match flag.as_str() {
-            "-h" | "--host" => &mut address,
+            "-h" | "--host" => &mut host,
+            "-p" | "--port" => &mut port,
             "-c" | "--config" => &mut config,
             "--help" => {
                 println!("{}", usage());
@@ -820,12 +824,19 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> (String, String) {
             None => bad(&format!("{flag} needs a value")),
         }
     }
-    let address = address.unwrap_or_else(|| bad("-h/--host is required"));
-    (address, config.unwrap_or_else(|| DEFAULT_CONFIG.into()))
+    let host = host.unwrap_or_else(|| bad("-h/--host is required"));
+    // "[::1]" is accepted as well as "::1".
+    let host = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(&host).to_string();
+    let port = port.unwrap_or_else(|| bad("-p/--port is required"));
+    let port = match port.parse::<u16>() {
+        Ok(p) if p > 0 => p,
+        _ => bad(&format!("-p/--port: {port:?} is not a port number (1-65535)")),
+    };
+    (host, port, config.unwrap_or_else(|| DEFAULT_CONFIG.into()))
 }
 
 fn main() {
-    let (address, stations_file) = parse_args(std::env::args().skip(1));
+    let (host, port, stations_file) = parse_args(std::env::args().skip(1));
     match stations::create_if_missing(&stations_file, EXAMPLE_SETTINGS) {
         Ok(true) => eprintln!("Created {stations_file} with example stations"),
         Ok(false) => {}
@@ -879,21 +890,16 @@ fn main() {
         .build()
         .unwrap_or_else(|e| fail(e));
     rt.block_on(async move {
-        // ":8123" means all interfaces, IPv6 and IPv4.
-        let listener = if let Some(port) = address.strip_prefix(':') {
-            // On Windows an IPv6 socket does not accept IPv4, so use IPv4 there.
-            let any = if cfg!(windows) { "0.0.0.0" } else { "[::]" };
-            match tokio::net::TcpListener::bind(format!("{any}:{port}")).await {
-                Ok(l) => Ok(l),
-                Err(_) => tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await,
+        let cannot = |e: std::io::Error| -> ! { fail(format!("Cannot listen on {host} port {port}: {e}")) };
+        let listener = match tokio::net::TcpListener::bind((host.as_str(), port)).await {
+            Ok(l) => l,
+            // "::" on a system without IPv6: all IPv4 interfaces instead.
+            Err(_) if host.parse() == Ok(std::net::Ipv6Addr::UNSPECIFIED) => {
+                tokio::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, port)).await.unwrap_or_else(|e| cannot(e))
             }
-            .unwrap_or_else(|e| fail(format!("Cannot listen on {address}: {e}")))
-        } else {
-            tokio::net::TcpListener::bind(&address)
-                .await
-                .unwrap_or_else(|e| fail(format!("Cannot listen on {address}: {e}")))
+            Err(e) => cannot(e),
         };
-        eprintln!("Listening on {address}");
+        eprintln!("Listening on {}", listener.local_addr().map(|a| a.to_string()).unwrap_or_else(|_| format!("{host} port {port}")));
         tokio::spawn(title_loop(app));
         // Send small websocket updates right away instead of waiting for ACKs.
         let listener = axum::serve::ListenerExt::tap_io(listener, |tcp| {
