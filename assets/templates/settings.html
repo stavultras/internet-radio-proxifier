@@ -13,6 +13,22 @@
 		<h1>Settings</h1>
 		<p class="settings-nav"><a href="/">&larr; back to radio</a></p>
 
+		<div class="tabs" role="tablist">
+			<button type="button" role="tab" id="tab-stations" aria-controls="panel-stations">Stations</button>
+			<button type="button" role="tab" id="tab-settings" aria-controls="panel-settings">Settings</button>
+		</div>
+
+		<div id="panel-stations" class="tab-panel" role="tabpanel" aria-labelledby="tab-stations">
+			<ol id="station-list"></ol>
+
+			<div class="settings-actions">
+				<button type="button" id="btn-add">Add</button>
+				<button type="button" id="btn-test-all">Test all</button>
+				<button type="button" id="btn-proxy-failing" title="Run tests, then tick proxy for stations that only work through it">Proxy the failing</button>
+			</div>
+		</div>
+
+		<div id="panel-settings" class="tab-panel" role="tabpanel" aria-labelledby="tab-settings" hidden>
 		<section class="proxy-box player-box">
 			<label class="check"><input type="checkbox" id="autoplay"> Autoplay</label>
 			<p class="hint">Start playing as soon as the radio page is opened. Browsers may still ask for one click first.</p>
@@ -31,15 +47,11 @@
 			<input id="proxy-url" placeholder="socks5://user:password@192.168.1.10:1080" autocomplete="off" spellcheck="false">
 			<p class="hint">Used only by stations with <b>proxy</b> ticked. Supports socks5://, socks5h:// (DNS on the proxy), http://. Format: socks5h://user:password@host:port; without a port, 1080 is used for SOCKS. Leave empty for none. The saved password is shown as ********; leave it as is to keep it.</p>
 		</section>
+		</div>
 
+		<!-- on both tabs: saves stations and settings together -->
 		<div id="settings-msg" role="status"></div>
-
-		<ol id="station-list"></ol>
-
-		<div class="settings-actions">
-			<button type="button" id="btn-add">Add</button>
-			<button type="button" id="btn-test-all">Test all</button>
-			<button type="button" id="btn-proxy-failing" title="Run tests, then tick proxy for stations that only work through it">Proxy the failing</button>
+		<div class="settings-actions save-actions">
 			<button type="button" id="btn-revert">Undo changes</button>
 			<button type="button" id="btn-save" class="primary">Save</button>
 		</div>

@@ -18,6 +18,37 @@ function retriesValue() {
 	return Number.isInteger(n) && retriesInput.value.trim() !== '' ? Math.min(Math.max(n, 0), 10) : 3;
 }
 
+// Two tabs, Stations and Settings; the open one is kept in the URL (#settings).
+const TABS = ['stations', 'settings'];
+function showTab(name) {
+	if (!TABS.includes(name)) name = TABS[0];
+	for (const t of TABS) {
+		const on = t === name;
+		const tab = document.querySelector('#tab-' + t);
+		tab.setAttribute('aria-selected', on);
+		tab.tabIndex = on ? 0 : -1;
+		document.querySelector('#panel-' + t).hidden = !on;
+	}
+	history.replaceState(null, '', name === TABS[0] ? location.pathname : '#' + name);
+}
+for (const t of TABS) {
+	const tab = document.querySelector('#tab-' + t);
+	tab.addEventListener('click', () => showTab(t));
+	tab.addEventListener('keydown', e => {
+		const step = {ArrowRight: 1, ArrowLeft: -1}[e.key];
+		if (!step) return;
+		const next = TABS[(TABS.indexOf(t) + step + TABS.length) % TABS.length];
+		showTab(next);
+		document.querySelector('#tab-' + next).focus();
+	});
+}
+showTab(location.hash.slice(1));
+// Opens the tab an input is on, then focuses it (for errors on the other tab).
+function reveal(el) {
+	showTab(el.closest('.tab-panel').id.replace('panel-', ''));
+	el.focus();
+}
+
 function setMsg(text, kind) {
 	msg.textContent = text;
 	msg.className = kind || '';
@@ -52,11 +83,27 @@ function refresh() {
 		r.querySelector('.b-drag').disabled = rs.length === 1;
 		r.querySelector('.b-del').disabled = rs.length === 1;
 	});
+	updateProxyToggles(rs);
 	const dirty = isDirty();
 	btnSave.disabled = !dirty;
 	btnRevert.disabled = !dirty;
 	if (dirty) setMsg('Unsaved changes', 'dirty');
 	else if (msg.className === 'dirty') setMsg('');
+}
+
+// Without a proxy a station's proxy box cannot be ticked (it would not work).
+// A ticked one can still be unticked, so clearing the proxy never locks it.
+const PROXY_TITLE = 'Connect to this station through the proxy';
+function updateProxyToggles(rs = rows()) {
+	const noProxy = !proxyInput.value.trim();
+	for (const r of rs) {
+		const box = r.querySelector('.f-proxy');
+		const off = noProxy && !box.checked;
+		box.disabled = off;
+		const label = box.closest('.proxy-toggle');
+		label.classList.toggle('off', off);
+		label.title = off ? 'Set a proxy on the Settings tab first' : PROXY_TITLE;
+	}
 }
 
 function addRow(st, focus) {
@@ -146,8 +193,9 @@ retriesInput.addEventListener('change', () => { retriesInput.value = retriesValu
 
 document.querySelector('#btn-proxy-failing').addEventListener('click', async e => {
 	if (!proxyInput.value.trim()) {
-		setMsg('Enter a proxy first', 'bad');
-		proxyInput.focus();
+		setMsg('Enter a proxy first (Settings tab)', 'bad');
+		proxyInput.classList.add('invalid');
+		reveal(proxyInput);
 		return;
 	}
 	e.target.disabled = true;
@@ -253,18 +301,18 @@ btnSave.addEventListener('click', async () => {
 	if (proxyErr) {
 		proxyInput.classList.add('invalid');
 		setMsg(proxyErr, 'bad');
-		proxyInput.focus();
+		reveal(proxyInput);
 		return;
 	}
 	if (rows().some(r => r.querySelector('.f-proxy').checked) && !pv) {
 		setMsg('Some stations use the proxy, but no proxy is set', 'bad');
 		proxyInput.classList.add('invalid');
-		proxyInput.focus();
+		reveal(proxyInput);
 		return;
 	}
 	if (firstBad) {
 		setMsg('Fill in every name and an http(s) URL', 'bad');
-		firstBad.focus();
+		reveal(firstBad);
 		return;
 	}
 	btnSave.disabled = true;

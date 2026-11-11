@@ -9,21 +9,78 @@ your region).
 The project was initially based on [pinpox/radio](https://github.com/pinpox/radio)
 and has since been rewritten in Rust.
 
+![Player](docs/player.png)
+
 ## Features
 
-- Player page: next / previous / random station, a station picker, volume
-  with percentage, the current song title
-- Remembers the last station per browser; optional autoplay; optional
-  random mode for Next / Previous
-- Reconnects to a station that drops for a moment (internet or proxy
-  reconnecting), then skips stations that stay down
-- Song titles are fetched only for stations someone is listening to
-- Settings page: add, edit, test and drag to reorder stations, set the
-  proxy, choose per station whether it goes through the proxy, autoplay,
-  random, retry attempts
-- Installable as a PWA; Media Session support (lock screen, headset buttons)
-- One static binary of about 2 MB using a few MB of RAM; no runtime
-  dependencies besides CA certificates for https stations
+- Streams every station through the radio's own machine; per station
+  through a SOCKS5 or HTTP proxy
+- Player: previous / next / random station, a station picker with a filter,
+  volume, the current song title and a status line that says what the
+  player is doing
+- Keeps playing through short drops: a station that stops is reconnected a
+  few times before the player moves on; stations that are down are skipped
+- Settings page to manage stations and options from the browser, protected
+  by a password if you set one
+- Works without internet access to anything but the stations themselves:
+  everything the browser needs is built into the binary
+- Installable as an app (PWA); lock screen and headset controls (Media
+  Session)
+- One static binary of about 2 MB using a few MB of RAM; packages for
+  Linux, Windows and OpenWrt (25.x and 24.10)
+
+## Player
+
+`http://ADDRESS:PORT/`
+
+- **Previous / Next station**, **Random station**, **Pause**
+- **All stations**: a list of all stations with a filter; stations that go
+  through the proxy are marked
+- The status line shows what is going on: connecting, playing, buffering,
+  a station that dropped and is reconnecting, a station that is unavailable
+  and skipped
+- Each browser remembers its last station and volume
+- With *Autoplay* the radio starts as soon as the page opens (browsers may
+  still want one click first)
+- Song titles are only fetched for stations someone is listening to
+
+![Station picker](docs/stations.png)
+
+## Settings page
+
+`http://ADDRESS:PORT/settings` (user name `admin` and the `password` from
+the settings file, if one is set). Changes on both tabs are saved together
+with **Save**, or dropped with **Undo changes**; listeners get them right
+away.
+
+**Stations** tab:
+
+- Add, rename and remove stations; drag the grip on the left to reorder
+  them (or focus it and use the arrow keys)
+- **Test** checks that a station plays and shows its format and bitrate;
+  **Test all** checks every station
+- **proxy**: this station goes through the proxy. It can only be ticked
+  when a proxy is set on the Settings tab
+- **Proxy the failing**: tests every station directly and ticks *proxy*
+  for the ones that only work through the proxy
+
+![Settings: stations](docs/settings-stations.png)
+
+**Settings** tab:
+
+- **Autoplay**: start playing when the radio page opens
+  - **Start with a random station** instead of the one played last in this
+    browser (needs Autoplay)
+- **Random**: Previous and Next jump to a random station
+- **Retry attempts**: how often a station that stopped playing (for
+  example while the internet or the proxy reconnects) is reconnected
+  before the player skips it; 0 skips right away
+- **Proxy**: `socks5://`, `socks5h://` (DNS on the proxy), `http://` or
+  `https://`. The saved password is shown as `********`
+
+![Settings: options](docs/settings-options.png)
+
+The settings page password itself can only be set in the settings file.
 
 ## Downloads
 
@@ -122,9 +179,13 @@ internet-radio-proxifier -a ADDRESS -p PORT [-c SETTINGS_FILE]
   -V, --version          show the version
 ```
 
-The player is at `http://ADDRESS:PORT/`, the settings page at `http://ADDRESS:PORT/settings`.
+The player is at `http://ADDRESS:PORT/`, the settings page at
+`http://ADDRESS:PORT/settings`.
 
 ## Settings file
+
+Everything on the settings page is stored in one INI file, which can also
+be edited by hand (restart the service afterwards):
 
 ```ini
 # Settings page password (user name: admin). It can only be set by editing
@@ -145,19 +206,18 @@ url       = https://stream.example.org/radio.aac
 use_proxy = true
 ```
 
+- `password`: settings page password; without it the page is open
 - `proxy_url`: `socks5://`, `socks5h://` (DNS on the proxy), `http://` or
   `https://`; without a port, 1080 is used for SOCKS
-- `use_proxy`: this station goes through the proxy
+- `autoplay`: start playing as soon as the player page opens (default true)
 - `random_start`: with `autoplay`, start with a random station instead of
   the one played last in this browser
 - `random`: Next and Previous jump to a random station instead of the
   neighbouring one
 - `retries`: how often the player reconnects to a station that stopped
-  playing (for example while the internet or the proxy reconnects) before it
-  skips to the next one, waiting 3, 6, 9, ... seconds; 0 to 10, default 3.
-  A station that never started is skipped right away
-- `autoplay`: start playing as soon as the player page opens (browsers may
-  still require one click first)
+  playing before it skips to the next one, waiting 3, 6, 9, ... seconds;
+  0 to 10, default 3. A station that never started is skipped right away
+- `use_proxy` (per station): this station goes through the proxy
 - The settings page rewrites the file when you save, keeping the password.
   On Linux the file is written with mode 0600 because it holds passwords.
 

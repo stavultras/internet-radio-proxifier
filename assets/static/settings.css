@@ -80,7 +80,43 @@ body.settings > * { margin-bottom: 16px; }
 .test-result.bad { color: #ff6b6b; }
 .test-result.busy { opacity: .7; }
 
-.settings-actions { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; justify-content: center; margin-top: 20px; }
+body.settings .settings-actions { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; justify-content: center; margin-top: 20px; }
+
+.tabs {
+	display: flex;
+	gap: 8px;
+	border-bottom: 1px solid var(--color);
+}
+.settings .tabs button {
+	min-width: 0;
+	margin: 0 0 -1px 0;
+	padding: 6px 18px;
+	font-size: 15px;
+	letter-spacing: 1px;
+	box-shadow: none;
+	border-bottom-color: var(--color);
+}
+.settings .tabs button[aria-selected="true"] {
+	background: var(--color);
+	color: var(--background-color);
+	font-weight: bold;
+}
+.settings .tabs button:active { top: 0; left: 0; }
+/* style.css shows every child of body as a block; keep the closed tab hidden */
+.tab-panel[hidden] { display: none; }
+.tab-panel > :first-child { margin-top: 0; }
+.tab-panel > * + * { margin-top: 16px; }
+/* the first station sits as close to the tabs as the first box on Settings */
+#station-list > .station-row:first-child { padding-top: 0; }
+body.settings > .tab-panel { margin-bottom: 0; }
+/* 8px to the Save row; on top 8px plus the 5px shadow of the buttons above,
+   so both gaps look the same */
+body.settings #settings-msg { margin: 13px 0 8px; }
+/* on the Settings tab the box above has no shadow */
+body.settings #panel-settings:not([hidden]) ~ #settings-msg { margin-top: 8px; }
+/* Add / Test all / Proxy the failing: no extra space under the last row of buttons */
+#panel-stations .settings-actions button { margin-bottom: 0; }
+body.settings .save-actions { margin-top: 0; }
 
 #settings-msg { min-height: 1.4em; text-align: center; }
 #settings-msg.ok { color: #7CFC00; }
@@ -123,6 +159,7 @@ body.settings > * { margin-bottom: 16px; }
 	white-space: nowrap;
 	margin-right: 4px;
 }
+.proxy-toggle.off { opacity: .4; cursor: default; }
 .settings .proxy-toggle input {
 	width: auto;
 	accent-color: var(--color);
