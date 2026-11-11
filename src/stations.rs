@@ -5,6 +5,8 @@
 //!   autoplay  = true          (start playing when the player page opens)
 //!   random_start = false      (with autoplay: start with a random station)
 //!   random    = false         (Next / Previous pick a random station)
+//!   retries   = 3             (reconnects to a station that stopped before
+//!                              it is skipped; 0 to 10)
 //!
 //!   [Station name]
 //!   url       = https://stream.example.com/live.mp3
@@ -58,11 +60,17 @@ pub struct Settings {
     pub random_start: bool,
     /// Next / Previous pick a random station instead of the neighbouring one.
     pub random: bool,
+    /// How often the player reconnects to a station that stopped playing
+    /// before it skips to the next one.
+    pub retries: u32,
 }
+
+pub const DEFAULT_RETRIES: u32 = 3;
+pub const MAX_RETRIES: u32 = 10;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { stations: Vec::new(), proxy: String::new(), password: String::new(), autoplay: true, random_start: false, random: false }
+        Settings { stations: Vec::new(), proxy: String::new(), password: String::new(), autoplay: true, random_start: false, random: false, retries: DEFAULT_RETRIES }
     }
 }
 
@@ -73,6 +81,7 @@ pub fn parse(text: &str) -> Settings {
     let mut autoplay = true;
     let mut random_start = false;
     let mut random = false;
+    let mut retries = DEFAULT_RETRIES;
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
@@ -91,12 +100,17 @@ pub fn parse(text: &str) -> Settings {
             (None, "autoplay") => autoplay = parse_bool(&value),
             (None, "random_start") => random_start = parse_bool(&value),
             (None, "random") => random = parse_bool(&value),
+            (None, "retries") => {
+                if let Ok(n) = value.parse::<u32>() {
+                    retries = n.min(MAX_RETRIES);
+                }
+            }
             (Some(st), "url") => st.url = value,
             (Some(st), "use_proxy") => st.use_proxy = parse_bool(&value),
             _ => {}
         }
     }
-    Settings { stations: list, proxy: proxy.trim().to_string(), password, autoplay, random_start, random }
+    Settings { stations: list, proxy: proxy.trim().to_string(), password, autoplay, random_start, random, retries }
 }
 
 pub fn load(path: &str) -> io::Result<Settings> {
@@ -149,8 +163,8 @@ pub fn render(s: &Settings) -> String {
         out += &format!("proxy_url = {}\n", ini_quote(&s.proxy));
     }
     out += &format!(
-        "autoplay     = {}\nrandom_start = {}\nrandom       = {}\n\n",
-        s.autoplay, s.random_start, s.random
+        "autoplay     = {}\nrandom_start = {}\nrandom       = {}\nretries      = {}\n\n",
+        s.autoplay, s.random_start, s.random, s.retries
     );
     for st in &s.stations {
         out += &format!("[{}]\n", st.name);
@@ -239,7 +253,11 @@ mod tests {
         assert!(!s.random);
         assert!(parse("random = yes\n[A]\nurl = http://a\n").random);
         assert!(parse("random_start = true\n[A]\nurl = http://a\n").random_start);
-        let off = Settings { autoplay: false, random_start: true, random: true, ..s.clone() };
+        assert_eq!(s.retries, DEFAULT_RETRIES);
+        assert_eq!(parse("retries = 0\n[A]\nurl = http://a\n").retries, 0);
+        assert_eq!(parse("retries = 99\n[A]\nurl = http://a\n").retries, MAX_RETRIES);
+        assert_eq!(parse("retries = x\n[A]\nurl = http://a\n").retries, DEFAULT_RETRIES);
+        let off = Settings { autoplay: false, random_start: true, random: true, retries: 0, ..s.clone() };
         assert_eq!(parse(&render(&off)), off);
         let list = &s.stations;
         assert_eq!(list.len(), 4);

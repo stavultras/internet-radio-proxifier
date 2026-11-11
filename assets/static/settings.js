@@ -9,7 +9,14 @@ const proxyInput = document.querySelector('#proxy-url');
 const autoplayInput = document.querySelector('#autoplay');
 const randomInput = document.querySelector('#random');
 const randomStartInput = document.querySelector('#random-start');
-let saved = {proxy: '', autoplay: true, random_start: false, random: false, stations: []};
+const retriesInput = document.querySelector('#retries');
+let saved = {proxy: '', autoplay: true, random_start: false, random: false, retries: 3, stations: []};
+
+// 0 to 10; anything else falls back to the default.
+function retriesValue() {
+	const n = Number(retriesInput.value);
+	return Number.isInteger(n) && retriesInput.value.trim() !== '' ? Math.min(Math.max(n, 0), 10) : 3;
+}
 
 function setMsg(text, kind) {
 	msg.textContent = text;
@@ -26,6 +33,7 @@ function current() {
 		autoplay: autoplayInput.checked,
 		random_start: randomStartInput.checked,
 		random: randomInput.checked,
+		retries: retriesValue(),
 		stations: rows().map(r => ({
 			name: r.querySelector('.f-name').value.trim(),
 			url: r.querySelector('.f-url').value.trim(),
@@ -66,6 +74,7 @@ function render(cfg) {
 	autoplayInput.checked = cfg.autoplay;
 	randomInput.checked = cfg.random;
 	randomStartInput.checked = cfg.random_start;
+	retriesInput.value = cfg.retries;
 	updateRandomStart();
 	list.replaceChildren();
 	cfg.stations.forEach(st => addRow(st));
@@ -132,6 +141,8 @@ function updateRandomStart() {
 autoplayInput.addEventListener('change', () => { updateRandomStart(); refresh(); });
 randomStartInput.addEventListener('change', refresh);
 randomInput.addEventListener('change', refresh);
+retriesInput.addEventListener('input', refresh);
+retriesInput.addEventListener('change', () => { retriesInput.value = retriesValue(); refresh(); });
 
 document.querySelector('#btn-proxy-failing').addEventListener('click', async e => {
 	if (!proxyInput.value.trim()) {

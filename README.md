@@ -15,11 +15,12 @@ and has since been rewritten in Rust.
   with percentage, the current song title
 - Remembers the last station per browser; optional autoplay; optional
   random mode for Next / Previous
-- Skips stations that stop working
+- Reconnects to a station that drops for a moment (internet or proxy
+  reconnecting), then skips stations that stay down
 - Song titles are fetched only for stations someone is listening to
 - Settings page: add, edit, test and drag to reorder stations, set the
   proxy, choose per station whether it goes through the proxy, autoplay,
-  random
+  random, retry attempts
 - Installable as a PWA; Media Session support (lock screen, headset buttons)
 - One static binary of about 2 MB using a few MB of RAM; no runtime
   dependencies besides CA certificates for https stations
@@ -130,6 +131,7 @@ proxy_url = socks5h://user:password@192.168.1.10:1080
 autoplay     = true
 random_start = false
 random       = false
+retries      = 3
 
 [Station name]
 url = https://stream.example.com/live.mp3
@@ -146,6 +148,10 @@ use_proxy = true
   the one played last in this browser
 - `random`: Next and Previous jump to a random station instead of the
   neighbouring one
+- `retries`: how often the player reconnects to a station that stopped
+  playing (for example while the internet or the proxy reconnects) before it
+  skips to the next one, waiting 3, 6, 9, ... seconds; 0 to 10, default 3.
+  A station that never started is skipped right away
 - `autoplay`: start playing as soon as the player page opens (browsers may
   still require one click first)
 - The settings page rewrites the file when you save, keeping the password.

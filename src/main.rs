@@ -45,6 +45,8 @@ struct App {
     random_start: std::sync::atomic::AtomicBool,
     /// Next / Previous pick a random station.
     random: std::sync::atomic::AtomicBool,
+    /// Reconnects to a station that stopped, before the player skips it.
+    retries: AtomicUsize,
     stations_file: String,
     sessions: Mutex<HashMap<u64, Session>>,
     /// Last known song title per stream URL.
@@ -371,7 +373,8 @@ async fn index(State(app): State<Shared>) -> Html<String> {
         (true, false) => "autoplay data-autoplay",
         _ => "",
     };
-    Html(INDEX.replace("{{url}}", &esc(&App::station_url(0))).replace("{{autoplay}}", autoplay))
+    let attrs = format!("{autoplay} data-retries=\"{}\"", app.retries.load(Ordering::Relaxed));
+    Html(INDEX.replace("{{url}}", &esc(&App::station_url(0))).replace("{{autoplay}}", &attrs))
 }
 
 #[derive(Serialize)]
@@ -475,8 +478,14 @@ struct ConfigJson {
     autoplay: bool,
     random_start: bool,
     random: bool,
+    #[serde(default = "default_retries")]
+    retries: u32,
     #[serde(default)]
     stations: Vec<StationJson>,
+}
+
+fn default_retries() -> u32 {
+    stations::DEFAULT_RETRIES
 }
 
 /// Splits "scheme://user:pass@rest" into (prefix incl. "user:", pass, "@rest").
@@ -513,6 +522,7 @@ fn config_json(app: &App) -> ConfigJson {
         autoplay: app.autoplay.load(Ordering::Relaxed),
         random_start: app.random_start.load(Ordering::Relaxed),
         random: app.random.load(Ordering::Relaxed),
+        retries: app.retries.load(Ordering::Relaxed) as u32,
         stations: list
             .iter()
             .map(|s| StationJson { name: s.name.clone(), url: s.url.clone(), use_proxy: s.use_proxy })
@@ -593,6 +603,7 @@ async fn settings_put(State(app): State<Shared>, headers: HeaderMap, body: Bytes
     let settings = stations::Settings { stations: list, proxy: raw, password, autoplay: input.autoplay,
         random_start: input.random_start,
         random: input.random,
+        retries: input.retries.min(stations::MAX_RETRIES),
     };
     if let Err(e) = stations::save(&app.stations_file, &settings) {
         eprintln!("Saving settings failed: {e}");
@@ -602,7 +613,8 @@ async fn settings_put(State(app): State<Shared>, headers: HeaderMap, body: Bytes
         );
     }
     let has_proxy = parsed.is_some();
-    let stations::Settings { stations: list, proxy: raw, autoplay, random_start, random, .. } = settings;
+    let stations::Settings { stations: list, proxy: raw, autoplay, random_start, random, retries, .. } = settings;
+    app.retries.store(retries as usize, Ordering::Relaxed);
     app.autoplay.store(autoplay, Ordering::Relaxed);
     app.random_start.store(random_start, Ordering::Relaxed);
     app.random.store(random, Ordering::Relaxed);
@@ -816,7 +828,7 @@ fn main() {
         Ok(false) => {}
         Err(e) => fail(format!("Cannot create {stations_file}: {e}")),
     }
-    let stations::Settings { stations: list, proxy: proxy_raw, password, autoplay, random_start, random } =
+    let stations::Settings { stations: list, proxy: proxy_raw, password, autoplay, random_start, random, retries } =
         stations::load(&stations_file).unwrap_or_else(|e| fail(format!("Cannot read {stations_file}: {e}")));
     if list.is_empty() {
         fail(format!("No stations found in {stations_file}"));
@@ -836,6 +848,7 @@ fn main() {
         autoplay: std::sync::atomic::AtomicBool::new(autoplay),
         random_start: std::sync::atomic::AtomicBool::new(random_start),
         random: std::sync::atomic::AtomicBool::new(random),
+        retries: AtomicUsize::new(retries as usize),
         stations_file,
         sessions: Mutex::new(HashMap::new()),
         titles: Mutex::new(HashMap::new()),

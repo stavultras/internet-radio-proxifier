@@ -52,6 +52,9 @@ const player = document.querySelector('#audio-player');
 const AUTOPLAY = player.hasAttribute('data-autoplay');
 // Settings page "Start with a random station" (only together with autoplay).
 const RANDOM_START = player.hasAttribute('data-random-start');
+// Settings page "Retry attempts": reconnects to a station that stopped
+// playing before it is skipped.
+const RETRIES = Number(player.dataset.retries ?? 3);
 
 // Workaround to prevent player from playing when replaced
 let audioSource = document.querySelector('#audio-source');
@@ -101,6 +104,8 @@ wsContainer.addEventListener('htmx:wsAfterMessage', event => {
 	if (currentSource != audioSource.src) {
 		currentSource = audioSource.src;
 		stationStarted = false;
+		retriesLeft = RETRIES;
+		clearTimeout(retryTimer);
 		player.load();
 		if (playAfterSwitch) {
 			playAfterSwitch = false;
@@ -222,11 +227,13 @@ let gaveUp = '';
 function showPlayerState() {
 	if (waitingForGesture) return;
 	if (gaveUp) setStatus(gaveUp, 'bad');
+	else if (retrying) connectingStatus();
 	else if (player.paused) setStatus('Paused');
 	else if (player.readyState >= 3) setStatus('Playing', 'ok');
 	else connectingStatus();
 }
 function connectingStatus() {
+	if (retrying) return setStatus(retryText, 'bad');
 	const name = currentStationName();
 	const failed = failedStation ? `${failedStation} is unavailable. ` : '';
 	setStatus(`${failed}Connecting to ${name || 'the station'}…`, failedStation ? 'bad' : '');
@@ -237,11 +244,13 @@ player.addEventListener('play', () => {
 });
 player.addEventListener('playing', () => {
 	stationStarted = true;
+	retrying = false;
 	failedStation = '';
 	setStatus('Playing', 'ok');
 });
 player.addEventListener('waiting', () => {
 	if (player.paused || waitingForGesture) return;
+	if (retrying) return;
 	if (stationStarted) setStatus('Buffering…');
 	else connectingStatus();
 });
@@ -272,7 +281,11 @@ player.addEventListener('playing', () => { autoSkipActive = true; });
 playPauseButton.addEventListener('click', () => {
 	// The click handler above has already toggled play/pause.
 	autoSkipActive = !player.paused;
-	if (!autoSkipActive) skipsInARow = 0;
+	if (!autoSkipActive) {
+		skipsInARow = 0;
+		retrying = false;
+		clearTimeout(retryTimer);
+	}
 	lastProgressAt = Date.now();
 });
 for (const id of ['#button-ws-next', '#button-ws-prev']) {
@@ -288,8 +301,42 @@ for (const id of ['#button-ws-next', '#button-ws-prev']) {
 	});
 }
 
+// A station that has played and then stops (the internet or the proxy
+// reconnecting) is reconnected RETRIES times first, waiting a little longer
+// each time (3 s, 6 s, 9 s, ...); one that never started is skipped right away.
+const RETRY_DELAY_MS = 3000;
+let retriesLeft = RETRIES;
+let retrying = false;
+let retryTimer = 0;
+let retryText = '';
+
+function retryStation(reason) {
+	retriesLeft--;
+	retrying = true;
+	const attempt = RETRIES - retriesLeft;
+	console.log(`retry ${attempt}/${RETRIES}:`, reason, currentSource);
+	retryText = `${currentStationName() || 'The station'} stopped, reconnecting (${attempt}/${RETRIES})…`;
+	setStatus(retryText, 'bad');
+	const delay = RETRY_DELAY_MS * attempt;
+	// No stall check until this attempt has had its time.
+	lastProgressAt = Date.now() + delay;
+	lastTime = 0;
+	clearTimeout(retryTimer);
+	retryTimer = setTimeout(() => {
+		if (!autoSkipActive) return;
+		lastProgressAt = Date.now();
+		player.load();
+		startPlayback();
+	}, delay);
+}
+
 function skipStation(reason) {
 	if (!autoSkipActive) return;
+	if (stationStarted && retriesLeft > 0) {
+		retryStation(reason);
+		return;
+	}
+	retrying = false;
 	if (skipsInARow >= Math.max(stationNames.length, 1)) {
 		gaveUp = 'No station can be played right now. Is the internet connection working?';
 		autoSkipActive = false;
@@ -319,7 +366,10 @@ setInterval(() => {
 	if (player.currentTime !== lastTime) {
 		if (player.currentTime > lastTime) {
 			if (!goodSince) goodSince = now;
-			if (now - goodSince > 5000 && skipsInARow) skipsInARow = 0;
+			if (now - goodSince > 5000) {
+				skipsInARow = 0;
+				retriesLeft = RETRIES; // playing well again: a later drop gets all retries
+			}
 		}
 		lastTime = player.currentTime;
 		lastProgressAt = now;
