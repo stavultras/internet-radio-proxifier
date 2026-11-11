@@ -44,7 +44,7 @@ env:
 jobs:
   # release or not: VERSION without its tag on main, or the tag itself
   version:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.v.outputs.version }}
       release: ${{ steps.v.outputs.release }}
@@ -66,7 +66,7 @@ jobs:
 
   build:
     needs: version
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
@@ -184,7 +184,7 @@ jobs:
       !cancelled() && needs.version.outputs.release == 'true' &&
       needs.build.result == 'success' && needs.windows-test.result == 'success'
     needs: [version, build, windows-test]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v8
         with:
