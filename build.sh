@@ -73,8 +73,8 @@ windows() {
 	# Double-click starter: settings.ini next to internet-radio-proxifier.exe (created with
 	# example stations on the first run), player opened in the browser.
 	printf '%s\r\n' '@echo off' 'cd /d "%~dp0"' \
-		'start "" http://localhost:8123/' \
-		'internet-radio-proxifier.exe --address 0.0.0.0 --port 8123 --config settings.ini' 'pause' > "$d/start.cmd"
+		'start "" http://localhost:9876/' \
+		'internet-radio-proxifier.exe --address 0.0.0.0 --port 9876 --config settings.ini' 'pause' > "$d/start.cmd"
 	(cd "$DIST/stage" && rm -f "$DIST/$NAME-$V-windows-x86_64.zip" && zip -qr9 "$DIST/$NAME-$V-windows-x86_64.zip" "$NAME-$V")
 	rm -rf "$DIST/stage"
 	echo "built $DIST/$NAME-$V-windows-x86_64.zip"

@@ -105,12 +105,12 @@ Every OpenWrt package comes in two formats: `.apk` for OpenWrt 25.x and
 ```sh
 tar xzf internet-radio-proxifier-*-linux-x86_64.tar.gz
 cd internet-radio-proxifier-*/
-./internet-radio-proxifier -a :: -p 8123 -c settings.ini
+./internet-radio-proxifier -a :: -p 9876 -c settings.ini
 ```
 
 ### Windows
 
-Unpack the zip and run `start.cmd`. It starts the radio on port 8123 with
+Unpack the zip and run `start.cmd`. It starts the radio on port 9876 with
 `settings.ini` next to `internet-radio-proxifier.exe` and opens the player in the browser.
 
 ### OpenWrt
@@ -148,10 +148,10 @@ OpenWrt 24.10: the ipk works under its release name; the standard one would
 be `internet-radio-proxifier_<version>-r1_<arch>.ipk`.
 
 The package installs `/usr/bin/internet-radio-proxifier` and a procd service that runs it as
-user `nobody` on port 8123:
+user `nobody` on port 9876:
 
 - `/etc/config/internet-radio-proxifier`: `enabled`, `address` (default `::`, all
-  interfaces), `port` (default `8123`), `config` (default
+  interfaces), `port` (default `9876`), `config` (default
   `/etc/internet-radio-proxifier/settings.ini`)
 - `/etc/internet-radio-proxifier/settings.ini`: created with example stations on first start,
   kept across sysupgrade
@@ -161,7 +161,7 @@ user `nobody` on port 8123:
 logread -e internet-radio-proxifier
 ```
 
-Then open `http://<router>:8123/`.
+Then open `http://<router>:9876/`.
 
 ## Usage
 
@@ -171,7 +171,7 @@ internet-radio-proxifier -a ADDRESS -p PORT [-c SETTINGS_FILE]
   -a, --address ADDRESS  address to listen on: :: (all interfaces, IPv6 and
                          IPv4), 0.0.0.0 (all IPv4 interfaces) or one address
                          or host name, e.g. 192.168.1.1 or localhost
-  -p, --port PORT        port to listen on, e.g. 8123
+  -p, --port PORT        port to listen on, e.g. 9876
   -c, --config FILE      settings file (default: /etc/internet-radio-proxifier/settings.ini, on
                          Windows settings.ini); created with example stations
                          if it does not exist

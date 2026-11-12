@@ -785,7 +785,7 @@ fn usage() -> String {
   -a, --address ADDRESS  address to listen on: :: (all interfaces, IPv6 and
                          IPv4), 0.0.0.0 (all IPv4 interfaces) or one address
                          or host name, e.g. 192.168.1.1 or localhost
-  -p, --port PORT        port to listen on, e.g. 8123
+  -p, --port PORT        port to listen on, e.g. 9876
   -c, --config FILE      settings file (default: {DEFAULT_CONFIG}); created
                          with example stations if it does not exist
   -h, --help             show this help

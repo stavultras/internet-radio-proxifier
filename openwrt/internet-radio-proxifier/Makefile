@@ -38,7 +38,7 @@ endef
 define Package/internet-radio-proxifier/description
   Web radio player that streams internet radio stations through the
   router, with a settings page and an optional SOCKS5/HTTP proxy per
-  station. Listens on port 8123; service options in /etc/config/internet-radio-proxifier,
+  station. Listens on port 9876; service options in /etc/config/internet-radio-proxifier,
   proxy and station list in /etc/internet-radio-proxifier/settings.ini.
 endef
 

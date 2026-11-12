@@ -28,7 +28,7 @@ start_service() {
 	config_get_bool enabled main enabled 1
 	[ "$enabled" = 1 ] || return 0
 	config_get address main address '::'
-	config_get port main port '8123'
+	config_get port main port '9876'
 	config_get config main config "/etc/$NAME/settings.ini"
 
 	if ! prepare_settings "$config"; then
