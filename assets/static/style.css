@@ -353,3 +353,36 @@ body.needs-gesture #play-pause-button {
 	line-height: 1.3;
 	min-height: 1.3em;
 }
+
+/* Corner marks in the player box: "proxy" top left when the station plays
+   through the proxy, the bitrate top right. */
+.mainbox { position: relative; padding-top: 34px; }
+#station-tags {
+	position: absolute;
+	/* Same distance from the top as from the sides; the sides line up with
+	   the Previous / Next buttons (their shadow included). */
+	top: 12.5px;
+	left: 12.5px;
+	right: 12.5px;
+	display: flex;
+	justify-content: space-between;
+	font-size: 11px;
+	letter-spacing: 1px;
+	line-height: 1.4;
+	pointer-events: none;
+}
+#station-tags .tag-proxy {
+	text-transform: uppercase;
+	border: 1px solid currentColor;
+	padding: 0 5px;
+	opacity: 0.75;
+	pointer-events: auto;
+}
+#station-tags .tag-bitrate { opacity: 0.75; }
+
+/* The buttons' 3D shadow sticks out 5px to the right; shift the row left by
+   half of it so the gaps to the box look the same on both sides. */
+.buttoncontainer {
+	box-sizing: border-box;
+	padding-right: 5px;
+}

@@ -36,13 +36,16 @@ and has since been rewritten in Rust.
 - **Previous / Next station**, **Random station**, **Pause**
 - **All stations**: a list of all stations with a filter; stations that go
   through the proxy are marked
+- The top corners of the player show **PROXY** when the station plays through
+  the proxy, and the station's bitrate when it reports one
 - The status line shows what is going on: connecting, playing, buffering,
   a station that dropped and is reconnecting, a station that is unavailable
   and skipped
 - Each browser remembers its last station and volume
 - With *Autoplay* the radio starts as soon as the page opens (browsers may
   still want one click first)
-- Song titles are only fetched for stations someone is listening to
+- Song titles are only fetched for stations someone is listening to; titles
+  in UTF-8 and in Latin-1 / Windows-1252 are both shown correctly
 
 ![Station picker](docs/stations.png)
 

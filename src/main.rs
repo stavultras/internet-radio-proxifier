@@ -51,6 +51,8 @@ struct App {
     sessions: Mutex<HashMap<u64, Session>>,
     /// Last known song title per stream URL.
     titles: Mutex<HashMap<String, String>>,
+    /// Last known bitrate ("128") per stream URL, from icy-br.
+    bitrates: Mutex<HashMap<String, String>>,
     /// Stream URLs with a title fetch running.
     inflight: Mutex<HashSet<String>>,
     save_lock: Mutex<()>,
@@ -104,9 +106,17 @@ impl App {
         )
     }
 
-    fn info_html(st: &Station, title: &str) -> String {
+    /// Station name, song title and the corner marks (proxy, bitrate).
+    fn info_html(&self, st: &Station, title: &str) -> String {
+        let proxy = if self.proxy_for(st).is_some() {
+            r#"<span class="tag-proxy" title="Plays through the proxy">proxy</span>"#
+        } else {
+            "<span></span>"
+        };
+        let br = self.bitrates.lock().unwrap().get(&st.url).cloned().unwrap_or_default();
+        let br = if br.is_empty() { String::new() } else { format!("{} kbps", esc(&br)) };
         format!(
-            "<div id=\"station-name\"><a class=\"stationurl\" href=\"{}\">[{}]</a></div>\n<div id=\"station-title\">{}</div>",
+            "<div id=\"station-tags\">{proxy}<span class=\"tag-bitrate\">{br}</span></div>\n<div id=\"station-name\"><a class=\"stationurl\" href=\"{}\">[{}]</a></div>\n<div id=\"station-title\">{}</div>",
             esc(&st.url),
             esc(&st.name),
             esc(title)
@@ -114,7 +124,7 @@ impl App {
     }
 
     fn station_info(&self, list: &[Station], i: usize) -> Option<String> {
-        list.get(i).map(|st| App::info_html(st, &self.cached_title(&st.url)))
+        list.get(i).map(|st| self.info_html(st, &self.cached_title(&st.url)))
     }
 
     fn send(&self, id: u64, html: String) {
@@ -139,12 +149,14 @@ impl App {
 
 // ---------------------------------------------------------------- titles
 
-async fn stream_title(url: &str, proxy: Option<&Proxy>) -> std::io::Result<String> {
+/// The stream's song title and bitrate in kbps (empty when unknown).
+async fn stream_title(url: &str, proxy: Option<&Proxy>) -> std::io::Result<(String, String)> {
     let mut resp = http::get(url, proxy, &[("Icy-MetaData", "1")]).await?;
-    let metaint: usize = resp
-        .header("icy-metaint")
-        .and_then(|v| v.trim().parse().ok())
-        .ok_or_else(|| http::err(format!("no metadata for {url}")))?;
+    let br = bitrate(resp.header("icy-br"), resp.header("ice-audio-info"));
+    // A stream without ICY metadata has no title, only the bitrate.
+    let Some(metaint) = resp.header("icy-metaint").and_then(|v| v.trim().parse::<usize>().ok()) else {
+        return Ok((String::new(), br));
+    };
     resp.body.skip(metaint).await?;
     let mut len = [0u8];
     resp.body.read_full(&mut len).await?;
@@ -153,10 +165,48 @@ async fn stream_title(url: &str, proxy: Option<&Proxy>) -> std::io::Result<Strin
     for part in meta.split(|&b| b == b';') {
         let p = trim_bytes(part);
         if p.len() >= 14 && p.starts_with(b"StreamTitle='") {
-            return Ok(String::from_utf8_lossy(&p[13..p.len() - 1]).into_owned());
+            return Ok((decode_title(&p[13..p.len() - 1]), br));
         }
     }
-    Ok(String::new())
+    Ok((String::new(), br))
+}
+
+/// kbps from icy-br ("128", some servers send "128,128") or, failing that,
+/// ice-audio-info ("ice-samplerate=44100;ice-bitrate=128;ice-channels=2").
+fn bitrate(icy_br: Option<&str>, audio_info: Option<&str>) -> String {
+    let num = |v: &str| {
+        let v = v.trim();
+        (!v.is_empty() && v.len() <= 5 && v.bytes().all(|b| b.is_ascii_digit()) && v != "0").then(|| v.to_string())
+    };
+    icy_br
+        .and_then(|v| num(v.split(',').next().unwrap_or("")))
+        .or_else(|| {
+            audio_info?.split(';').find_map(|kv| {
+                let (k, v) = kv.split_once('=')?;
+                k.trim().ends_with("bitrate").then(|| num(v)).flatten()
+            })
+        })
+        .unwrap_or_default()
+}
+
+/// ICY metadata has no declared charset: many stations send UTF-8, older
+/// ones Windows-1252 / Latin-1 ("W\xfclli"). Anything that is not valid
+/// UTF-8 is read as Windows-1252.
+fn decode_title(b: &[u8]) -> String {
+    if let Ok(s) = std::str::from_utf8(b) {
+        return s.to_string();
+    }
+    // Windows-1252 0x80-0x9F; the rest of the bytes are Latin-1.
+    const CP1252: [char; 32] = [
+        '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž', '\u{8f}',
+        '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9d}', 'ž', 'Ÿ',
+    ];
+    b.iter()
+        .map(|&c| match c {
+            0x80..=0x9f => CP1252[(c - 0x80) as usize],
+            _ => c as char,
+        })
+        .collect()
 }
 
 fn trim_bytes(mut b: &[u8]) -> &[u8] {
@@ -179,15 +229,14 @@ fn trim_bytes(mut b: &[u8]) -> &[u8] {
 async fn refresh_station(app: &App, list: &[Station], k: usize) {
     let st = &list[k];
     let title = match timeout(Duration::from_secs(10), stream_title(&st.url, app.proxy_for(st).as_ref())).await {
-        Ok(Ok(t)) => {
+        Ok(Ok((t, br))) => {
+            app.bitrates.lock().unwrap().insert(st.url.clone(), br);
             let t = stations::clean_title(&t);
             app.titles.lock().unwrap().insert(st.url.clone(), t.clone());
             t
         }
         Ok(Err(e)) => {
-            if !e.to_string().starts_with("no metadata") {
-                eprintln!("title of {}: {e}", st.name);
-            }
+            eprintln!("title of {}: {e}", st.name);
             app.cached_title(&st.url)
         }
         Err(_) => {
@@ -195,7 +244,7 @@ async fn refresh_station(app: &App, list: &[Station], k: usize) {
             app.cached_title(&st.url)
         }
     };
-    app.broadcast(k, &App::info_html(st, &title));
+    app.broadcast(k, &app.info_html(st, &title));
 }
 
 /// Starts a title fetch for station k unless one for the same stream runs.
@@ -643,7 +692,7 @@ fn remap_sessions(app: &App, old: &[Station], cur: &[Station]) {
         s.station = new_idx;
         // The relayed URL contains the index, so the player needs the new one.
         if found.is_none() || new_idx != idx {
-            let _ = s.tx.send(App::info_html(&cur[new_idx], &app.cached_title(&cur[new_idx].url)));
+            let _ = s.tx.send(app.info_html(&cur[new_idx], &app.cached_title(&cur[new_idx].url)));
             let _ = s.tx.send(App::player_html(new_idx));
         }
     }
@@ -866,6 +915,7 @@ fn main() {
         stations_file,
         sessions: Mutex::new(HashMap::new()),
         titles: Mutex::new(HashMap::new()),
+        bitrates: Mutex::new(HashMap::new()),
         inflight: Mutex::new(HashSet::new()),
         save_lock: Mutex::new(()),
         next_id: AtomicUsize::new(1),
@@ -912,6 +962,23 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bitrates() {
+        assert_eq!(bitrate(Some("128"), None), "128");
+        assert_eq!(bitrate(Some(" 192,192"), None), "192");
+        assert_eq!(bitrate(None, Some("ice-samplerate=44100;ice-bitrate=320;ice-channels=2")), "320");
+        assert_eq!(bitrate(None, Some("bitrate=64")), "64");
+        assert_eq!(bitrate(Some("Quality 0"), Some("channels=2")), "");
+        assert_eq!(bitrate(None, None), "");
+    }
+
+    #[test]
+    fn title_charsets() {
+        assert_eq!(decode_title("Wölli – Bühne".as_bytes()), "Wölli – Bühne");
+        assert_eq!(decode_title(b"W\xf6lli Und Die Band Des Jahres"), "Wölli Und Die Band Des Jahres");
+        assert_eq!(decode_title(b"Rock \x96 Caf\xe9 \x93Live\x94"), "Rock – Café “Live”");
+    }
 
     #[test]
     fn proxy_mask() {
