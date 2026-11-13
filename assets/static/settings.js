@@ -69,6 +69,7 @@ function current() {
 			name: r.querySelector('.f-name').value.trim(),
 			url: r.querySelector('.f-url').value.trim(),
 			useProxy: r.querySelector('.f-proxy').checked,
+			favorite: r.querySelector('.f-fav').checked,
 		})),
 	};
 }
@@ -136,6 +137,7 @@ function addRow(st, focus) {
 	r.querySelector('.f-name').value = st.name;
 	r.querySelector('.f-url').value = st.url;
 	r.querySelector('.f-proxy').checked = !!st.useProxy;
+	r.querySelector('.f-fav').checked = !!st.favorite;
 	list.appendChild(r);
 	if (focus) r.querySelector('.f-name').focus();
 	return r;

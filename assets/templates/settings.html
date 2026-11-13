@@ -24,6 +24,7 @@
 			<div class="list-head">
 				<span class="all-hint">for all stations:</span>
 				<div class="row-buttons">
+					<label class="fav-toggle spacer" aria-hidden="true"><input type="checkbox" tabindex="-1"> &#x2605;</label>
 					<label class="proxy-toggle"><input type="checkbox" id="proxy-all"> proxy</label>
 					<button type="button" class="spacer" tabindex="-1" aria-hidden="true">test</button>
 					<button type="button" class="spacer" tabindex="-1" aria-hidden="true">&times;</button>
@@ -76,6 +77,7 @@
 					<input class="f-url" placeholder="https://stream.example.com/live.mp3" autocomplete="off" inputmode="url" aria-label="Stream URL">
 				</div>
 				<div class="row-buttons">
+					<label class="fav-toggle" title="Favorite: listed and played first"><input type="checkbox" class="f-fav" aria-label="Favorite"> &#x2605;</label>
 					<label class="proxy-toggle" title="Connect to this station through the proxy"><input type="checkbox" class="f-proxy"> proxy</label>
 					<button type="button" class="b-test" title="Check that the stream plays">test</button>
 					<button type="button" class="b-del" title="Remove" aria-label="Remove">&times;</button>

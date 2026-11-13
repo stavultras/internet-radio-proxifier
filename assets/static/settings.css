@@ -170,6 +170,15 @@ body.settings .save-actions { margin-top: 0; }
 	margin-right: 4px;
 }
 .proxy-toggle.off { opacity: .4; cursor: default; }
+.fav-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	font-size: 15px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+.settings .fav-toggle input { width: auto; accent-color: var(--color); margin: 0; }
 /* "for all stations: proxy" above the list, over the rows' proxy boxes */
 .list-head {
 	display: flex;

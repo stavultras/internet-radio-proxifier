@@ -331,6 +331,11 @@ input::placeholder {
 #station-dialog .station-pick[aria-current] .pick-num {
 	opacity: 1;
 }
+#station-dialog .pick-fav {
+	flex: none;
+	width: 1.2ch;
+	text-align: center;
+}
 #station-dialog .pick-name {
 	flex: 1;
 	min-width: 0;
@@ -397,6 +402,32 @@ body.needs-gesture #play-pause-button {
 	pointer-events: auto;
 }
 #station-tags .tag-bitrate { opacity: 0.75; }
+
+/* Favorite star in the bottom right corner, in the box's bottom padding.
+   Its right edge lines up with the volume "100%" above it, with a bit more
+   room below it. The glyph is drawn 1.7px short of its right edge and 6px
+   above its bottom, hence the odd offsets. */
+.mainbox button#station-fav {
+	position: absolute;
+	right: 8.3px;
+	bottom: 8px;
+	min-width: 0;
+	min-height: 0;
+	margin: 0;
+	padding: 0;
+	border: 0;
+	box-shadow: none;
+	background: none;
+	color: var(--color);
+	font-size: 22px;
+	line-height: 1;
+	letter-spacing: 0;
+	cursor: pointer;
+	opacity: .75;
+}
+.mainbox button#station-fav[aria-pressed="true"] { opacity: 1; }
+.mainbox button#station-fav:hover { opacity: 1; background: none; color: var(--color); }
+.mainbox button#station-fav:active { top: auto; left: auto; }
 
 /* The buttons' 3D shadow sticks out 5px to the right; shift the row left by
    half of it so the gaps to the box look the same on both sides. */

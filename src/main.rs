@@ -117,8 +117,13 @@ impl App {
         };
         let br = self.bitrates.lock().unwrap().get(&st.url).cloned().unwrap_or_default();
         let br = if br.is_empty() { String::new() } else { format!("{} kbps", esc(&br)) };
+        let fav = if st.favorite {
+            r#"<button id="station-fav" type="button" aria-pressed="true" title="Remove from favorites">&#x2605;</button>"#
+        } else {
+            r#"<button id="station-fav" type="button" aria-pressed="false" title="Add to favorites">&#x2606;</button>"#
+        };
         format!(
-            "<div id=\"station-tags\">{proxy}<span class=\"tag-bitrate\">{br}</span></div>\n<div id=\"station-name\" data-index=\"{i}\"><span class=\"station-num\">#{}</span> <a class=\"stationurl\" href=\"{}\">[{}]</a></div>\n<div id=\"station-title\">{}</div>",
+            "<div id=\"station-tags\">{proxy}<span class=\"tag-bitrate\">{br}</span></div>\n<div id=\"station-name\" data-index=\"{i}\"><span class=\"station-num\">#{}</span> <a class=\"stationurl\" href=\"{}\">[{}]</a></div>\n<div id=\"station-title\">{}</div>\n{fav}",
             i + 1,
             esc(&st.url),
             esc(&st.name),
@@ -321,6 +326,9 @@ fn handle_ws_message(app: &Shared, id: u64, text: &str) {
     let station = {
         let mut sessions = app.sessions.lock().unwrap();
         let Some(s) = sessions.get_mut(&id) else { return };
+        if list.is_empty() {
+            return;
+        }
         let cur = if s.station < list.len() { s.station } else { 0 };
         let next = match msg.action.as_str() {
             "next" | "previous" if app.random.load(Ordering::Relaxed) && list.len() > 1 => {
@@ -328,8 +336,18 @@ fn handle_ws_message(app: &Shared, id: u64, text: &str) {
                 let r = random_below(list.len() - 1);
                 if r >= cur { r + 1 } else { r }
             }
-            "next" => (cur + 1) % list.len(),
-            "previous" => (cur + list.len() - 1) % list.len(),
+            // Through the play order: favorites first, then the others.
+            "next" | "previous" => {
+                let order = stations::play_order(&list);
+                let pos = order.iter().position(|&i| i == cur).unwrap_or(0);
+                let step = if msg.action == "next" { 1 } else { order.len() - 1 };
+                order[(pos + step) % order.len()]
+            }
+            "favorite" => {
+                drop(sessions);
+                toggle_favorite(app, cur);
+                return;
+            }
             "select" => {
                 if msg.index < 0 || msg.index as usize >= list.len() {
                     return;
@@ -350,6 +368,36 @@ fn handle_ws_message(app: &Shared, id: u64, text: &str) {
     }
     app.send(id, App::player_html(station));
     refresh_async(app, &list, station);
+}
+
+/// Stars or unstars station `i` from the player: saves the file and shows the
+/// new star to everyone listening to it.
+fn toggle_favorite(app: &Shared, i: usize) {
+    let _guard = app.save_lock.lock().unwrap();
+    let mut list = (*app.stations()).clone();
+    let Some(st) = list.get_mut(i) else { return };
+    st.favorite = !st.favorite;
+    let password = match stations::load(&app.stations_file) {
+        Ok(s) => s.password,
+        Err(e) => return eprintln!("Cannot read {}: {e}", app.stations_file),
+    };
+    let settings = stations::Settings {
+        stations: list,
+        proxy: app.proxy_raw(),
+        password,
+        autoplay: app.autoplay.load(Ordering::Relaxed),
+        random_start: app.random_start.load(Ordering::Relaxed),
+        random: app.random.load(Ordering::Relaxed),
+        retries: app.retries.load(Ordering::Relaxed) as u32,
+    };
+    if let Err(e) = stations::save(&app.stations_file, &settings) {
+        return eprintln!("Saving favorite failed: {e}");
+    }
+    let list = Arc::new(settings.stations);
+    *app.stations.write().unwrap() = list.clone();
+    let st = &list[i];
+    eprintln!("{} {} favorites", st.name, if st.favorite { "added to" } else { "removed from" });
+    app.broadcast(i, &app.info_html(i, st, &app.cached_title(&st.url)));
 }
 
 async fn ws_client(app: Shared, mut sock: WebSocket) {
@@ -449,13 +497,20 @@ async fn index(State(app): State<Shared>) -> Html<String> {
 
 #[derive(Serialize)]
 struct PickerEntry<'a> {
+    /// Position in the file (the station number is index + 1).
+    index: usize,
     name: &'a str,
     proxy: bool,
+    favorite: bool,
 }
 
 async fn api_stations(State(app): State<Shared>) -> Response {
     let list = app.stations();
-    let out: Vec<PickerEntry> = list.iter().map(|s| PickerEntry { name: &s.name, proxy: s.use_proxy }).collect();
+    // In play order: favorites first.
+    let out: Vec<PickerEntry> = stations::play_order(&list)
+        .into_iter()
+        .map(|i| PickerEntry { index: i, name: &list[i].name, proxy: list[i].use_proxy, favorite: list[i].favorite })
+        .collect();
     Json(out).into_response()
 }
 
@@ -539,6 +594,8 @@ struct StationJson {
     url: String,
     #[serde(default, rename = "useProxy")]
     use_proxy: bool,
+    #[serde(default)]
+    favorite: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -595,7 +652,7 @@ fn config_json(app: &App) -> ConfigJson {
         retries: app.retries.load(Ordering::Relaxed) as u32,
         stations: list
             .iter()
-            .map(|s| StationJson { name: s.name.clone(), url: s.url.clone(), use_proxy: s.use_proxy })
+            .map(|s| StationJson { name: s.name.clone(), url: s.url.clone(), use_proxy: s.use_proxy, favorite: s.favorite })
             .collect(),
     }
 }
@@ -649,7 +706,7 @@ async fn settings_put(State(app): State<Shared>, headers: HeaderMap, body: Bytes
     let list: Vec<Station> = input
         .stations
         .into_iter()
-        .map(|s| Station { name: s.name, url: s.url, use_proxy: s.use_proxy })
+        .map(|s| Station { name: s.name, url: s.url, use_proxy: s.use_proxy, favorite: s.favorite })
         .collect();
     let list = match stations::validate(list) {
         Ok(l) => l,

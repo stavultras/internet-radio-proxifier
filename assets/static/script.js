@@ -424,7 +424,8 @@ async function openStationPicker() {
 		return;
 	}
 	const cur = currentStationIndex();
-	stationPicker.replaceChildren(...stations.map(({name, proxy}, i) => {
+	// The list comes favorites first; `index` is the place in the file.
+	stationPicker.replaceChildren(...stations.map(({index: i, name, proxy, favorite}) => {
 		const li = document.createElement('li');
 		const b = document.createElement('button');
 		b.type = 'button';
@@ -434,6 +435,11 @@ async function openStationPicker() {
 		num.className = 'pick-num';
 		num.textContent = i + 1;
 		b.appendChild(num);
+		const fav = document.createElement('span');
+		fav.className = 'pick-fav';
+		fav.textContent = favorite ? '\u2605' : '';
+		if (favorite) fav.title = 'Favorite';
+		b.appendChild(fav);
 		const label = document.createElement('span');
 		label.className = 'pick-name';
 		label.textContent = name;
@@ -475,6 +481,12 @@ stationFilter.addEventListener('keydown', e => {
 // Clicking the backdrop closes the dialog.
 stationDialog.addEventListener('click', e => {
 	if (e.target === stationDialog) stationDialog.close();
+});
+
+// The star in the player box: the server saves it and sends the new star.
+document.addEventListener('click', e => {
+	if (!e.target.closest('#station-fav') || !socket) return;
+	socket.send(JSON.stringify({action: 'favorite'}), elt);
 });
 
 // Switch to station `index` and play it, even if the user had paused; it

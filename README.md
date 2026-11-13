@@ -41,6 +41,11 @@ and has since been rewritten in Rust.
 - Every station has a number, shown next to its name in the player, in the
   station list and on the settings page, so a station with a good song is easy
   to find again
+- **Favorites**: the star in the bottom right corner of the player marks the
+  station as a favorite (saved in the settings file, so it is the same on
+  every device). Favorites come first in **All stations** and in Next /
+  Previous, then the other stations, each in the order of the settings file.
+  The numbers do not change
 - The top corners of the player show **PROXY** when the station plays through
   the proxy, and the bitrate. The bitrate is measured from the audio itself
   (MP3 and AAC frames), not taken from what the station claims; `~173 kbps`
@@ -72,6 +77,7 @@ away.
   **Test all** checks every station and lists the numbers of the ones that
   fail. **Test all without proxy** does the same with the proxy off for every
   station, to see which ones really need it; it changes nothing
+- **&#x2605;**: favorite, the same as the star in the player
 - **proxy**: this station goes through the proxy. It can only be ticked
   when a proxy is set on the Settings tab. **for all stations: proxy** above the list
   ticks or unticks it for every station at once
@@ -218,6 +224,7 @@ url = https://stream.example.com/live.mp3
 [Another station]
 url       = https://stream.example.org/radio.aac
 use_proxy = true
+favorite  = true
 ```
 
 - `password`: settings page password; without it the page is open
@@ -232,6 +239,8 @@ use_proxy = true
   playing before it skips to the next one, waiting 3, 6, 9, ... seconds;
   0 to 10, default 3. A station that never started is skipped right away
 - `use_proxy` (per station): this station goes through the proxy
+- `favorite` (per station): listed and played first; set by the star in the
+  player too
 - The settings page rewrites the file when you save, keeping the password.
   On Linux the file is written with mode 0600 because it holds passwords.
 

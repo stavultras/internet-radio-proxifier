@@ -11,6 +11,7 @@
 //!   [Station name]
 //!   url       = https://stream.example.com/live.mp3
 //!   use_proxy = true
+//!   favorite  = true          (listed and played first)
 
 use std::collections::HashSet;
 use std::io::{self, Write};
@@ -21,6 +22,8 @@ pub struct Station {
     pub name: String,
     pub url: String,
     pub use_proxy: bool,
+    /// Favorites come first in the station list and in Next / Previous.
+    pub favorite: bool,
 }
 
 /// Value of an INI line: """…""", `…`, "…" or '…' are taken
@@ -88,7 +91,7 @@ pub fn parse(text: &str) -> Settings {
             continue;
         }
         if let Some(name) = line.strip_prefix('[').and_then(|l| l.rfind(']').map(|i| l[..i].trim())) {
-            list.push(Station { name: name.to_string(), url: String::new(), use_proxy: false });
+            list.push(Station { name: name.to_string(), url: String::new(), use_proxy: false, favorite: false });
             continue;
         }
         let Some(i) = line.find('=') else { continue };
@@ -107,6 +110,7 @@ pub fn parse(text: &str) -> Settings {
             }
             (Some(st), "url") => st.url = value,
             (Some(st), "use_proxy") => st.use_proxy = parse_bool(&value),
+            (Some(st), "favorite") => st.favorite = parse_bool(&value),
             _ => {}
         }
     }
@@ -139,7 +143,7 @@ pub fn validate(list: Vec<Station>) -> Result<Vec<Station>, String> {
         if !crate::http::is_stream_url(&url) {
             return Err(format!("station {name:?}: URL must start with http:// or https://"));
         }
-        out.push(Station { name, url, use_proxy: st.use_proxy });
+        out.push(Station { name, url, ..st });
     }
     Ok(out)
 }
@@ -168,13 +172,28 @@ pub fn render(s: &Settings) -> String {
     );
     for st in &s.stations {
         out += &format!("[{}]\n", st.name);
-        if st.use_proxy {
-            out += &format!("url       = {}\nuse_proxy = true\n\n", ini_quote(&st.url));
+        if st.use_proxy || st.favorite {
+            out += &format!("url       = {}\n", ini_quote(&st.url));
+            if st.use_proxy {
+                out += "use_proxy = true\n";
+            }
+            if st.favorite {
+                out += "favorite  = true\n";
+            }
+            out += "\n";
         } else {
             out += &format!("url = {}\n\n", ini_quote(&st.url));
         }
     }
     out
+}
+
+/// The order Next / Previous and the station list go through: favorites
+/// first, then the others, each in the order of the file.
+pub fn play_order(list: &[Station]) -> Vec<usize> {
+    let (mut fav, rest): (Vec<usize>, Vec<usize>) = (0..list.len()).partition(|&i| list[i].favorite);
+    fav.extend(rest);
+    fav
 }
 
 /// Creates a new file readable only by the owner (on Unix).
@@ -241,7 +260,7 @@ mod tests {
 
     const SAMPLE: &str = "proxy_url = socks5h://u:p@192.168.1.10:1080\n\n[ROCK FM]\nurl = http://a/rock-128.mp3\n\n\
         [0N Classic Rock]\nurl       = https://b/x.mp3\nuse_proxy = true\n\n\
-        [My]\nurl       = `http://s39.myradiostream.com:11590/listen/;.mp3`\n; comment\n[Q]\nurl = \"http://q/a\" \n";
+        [My]\nurl       = `http://s39.myradiostream.com:11590/listen/;.mp3`\nfavorite = yes\n; comment\n[Q]\nurl = \"http://q/a\" \n";
 
     #[test]
     fn ini_round_trip() {
@@ -262,6 +281,10 @@ mod tests {
         let list = &s.stations;
         assert_eq!(list.len(), 4);
         assert!(list[1].use_proxy && !list[0].use_proxy);
+        assert!(list[2].favorite && !list[1].favorite);
+        let both = Station { use_proxy: true, favorite: true, ..list[0].clone() };
+        let s2 = Settings { stations: vec![both], ..s.clone() };
+        assert_eq!(parse(&render(&s2)), s2);
         assert_eq!(list[2].url, "http://s39.myradiostream.com:11590/listen/;.mp3");
         assert_eq!(list[3].url, "http://q/a");
         assert_eq!(parse(&render(&s)), s);
@@ -269,6 +292,14 @@ mod tests {
             let s = Settings { password: pw.into(), ..s.clone() };
             assert_eq!(parse(&render(&s)), s, "{pw}");
         }
+    }
+
+    #[test]
+    fn favorites_first() {
+        let st = |f: bool| Station { name: String::new(), url: String::new(), use_proxy: false, favorite: f };
+        assert_eq!(play_order(&[st(false), st(true), st(false), st(true)]), vec![1, 3, 0, 2]);
+        assert_eq!(play_order(&[st(false), st(false)]), vec![0, 1]);
+        assert_eq!(play_order(&[]), Vec::<usize>::new());
     }
 
     #[test]
@@ -280,7 +311,7 @@ mod tests {
 
     #[test]
     fn validation() {
-        let st = |n: &str, u: &str| Station { name: n.into(), url: u.into(), use_proxy: false };
+        let st = |n: &str, u: &str| Station { name: n.into(), url: u.into(), use_proxy: false, favorite: false };
         assert!(validate(vec![st(" A ", " http://x/ ")]).is_ok());
         assert!(validate(vec![st("A", "http://x"), st("a", "http://y")]).unwrap_err().contains("duplicate"));
         assert!(validate(vec![st("A[", "http://x")]).is_err());
