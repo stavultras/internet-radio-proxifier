@@ -168,7 +168,7 @@ jobs:
           $s = Invoke-WebRequest http://127.0.0.1:9876/settings/api/stations -UseBasicParsing
           if ($s.Content -notmatch '"stations"') { Stop-Process $p; exit 1 }
           # an https station through the relay (bundled CA roots)
-          $req = [System.Net.HttpWebRequest]::Create('http://127.0.0.1:9876/station/0')
+          $req = [System.Net.HttpWebRequest]::Create('http://127.0.0.1:9876/station/1')
           $req.Timeout = 20000
           $resp = $req.GetResponse()
           $buf = New-Object byte[] 65536

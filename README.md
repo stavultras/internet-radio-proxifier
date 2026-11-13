@@ -40,7 +40,8 @@ and has since been rewritten in Rust.
   station (Enter plays it)
 - Every station has a number, shown next to its name in the player, in the
   station list and on the settings page, so a station with a good song is easy
-  to find again
+  to find again. `http://ADDRESS:PORT/station/N` is the stream of station N
+  (the same number), for other players such as VLC
 - **Favorites**: the star in the bottom right corner of the player marks the
   station as a favorite (saved in the settings file, so it is the same on
   every device). Favorites come first in **All stations** and in Next /

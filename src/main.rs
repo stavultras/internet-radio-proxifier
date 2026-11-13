@@ -92,8 +92,9 @@ impl App {
     }
 
     /// The URL the player uses for station i.
+    /// Stream of station `i`; the URL has its number (i + 1), like the player.
     fn station_url(i: usize) -> String {
-        format!("/station/{i}")
+        format!("/station/{}", i + 1)
     }
 
     fn cached_title(&self, url: &str) -> String {
@@ -517,7 +518,8 @@ async fn api_stations(State(app): State<Shared>) -> Response {
 /// The stream of station `index`, relayed through this server.
 async fn station_stream(State(app): State<Shared>, Path(index): Path<String>) -> Response {
     let list = app.stations();
-    let Some(st) = index.parse::<usize>().ok().and_then(|i| list.get(i)) else {
+    // /station/1 is the first station: the same numbers as in the player.
+    let Some(st) = index.parse::<usize>().ok().and_then(|n| n.checked_sub(1)).and_then(|i| list.get(i)) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let proxy = app.proxy_for(st);
@@ -1071,6 +1073,12 @@ mod tests {
         assert_eq!(unmask_proxy("socks5h://guest:new@192.168.1.10", raw), "socks5h://guest:new@192.168.1.10");
         assert_eq!(mask_proxy("socks5://192.168.1.10:1080"), "socks5://192.168.1.10:1080");
         assert_eq!(mask_proxy("socks5://user@192.168.1.10"), "socks5://user@192.168.1.10");
+    }
+
+    #[test]
+    fn station_urls_count_from_one() {
+        assert_eq!(App::station_url(0), "/station/1");
+        assert_eq!(App::station_url(446), "/station/447");
     }
 
     #[test]
