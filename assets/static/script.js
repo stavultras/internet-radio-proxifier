@@ -540,10 +540,14 @@ if (wantedStation || RANDOM_START) {
 }
 if (!AUTOPLAY) setStatus('Press play to start');
 
+// Names by place in the settings file (the index the server uses). The API
+// lists favorites first, so place each name at its own `index`.
 let stationNames = [];
 async function loadStationNames() {
 	try {
-		stationNames = (await (await fetch('/api/stations')).json()).map(s => s.name);
+		const names = [];
+		for (const s of await (await fetch('/api/stations')).json()) names[s.index] = s.name;
+		stationNames = names;
 	} catch (e) {}
 	return stationNames;
 }
