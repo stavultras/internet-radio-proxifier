@@ -37,7 +37,10 @@ and has since been rewritten in Rust.
 - **All stations**: a list of all stations with a filter; stations that go
   through the proxy are marked
 - The top corners of the player show **PROXY** when the station plays through
-  the proxy, and the station's bitrate when it reports one
+  the proxy, and the bitrate. The bitrate is measured from the audio itself
+  (MP3 and AAC frames), not taken from what the station claims; `~173 kbps`
+  means a variable bitrate (average). Other formats show the station's
+  `icy-br` if it sends one
 - The status line shows what is going on: connecting, playing, buffering,
   a station that dropped and is reconnecting, a station that is unavailable
   and skipped

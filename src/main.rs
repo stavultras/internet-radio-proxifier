@@ -5,6 +5,7 @@
 //! The settings file holds the proxy, the station list and the settings
 //! page password.
 
+mod audio;
 mod http;
 mod stations;
 
@@ -149,15 +150,30 @@ impl App {
 
 // ---------------------------------------------------------------- titles
 
-/// The stream's song title and bitrate in kbps (empty when unknown).
+/// Audio read to measure the bitrate of a stream without ICY metadata.
+const MEASURE_BYTES: usize = 32 * 1024;
+
+/// The stream's song title and bitrate ("128", "~173" for VBR; empty when
+/// unknown). The bitrate is measured from the audio frames; icy-br is only
+/// used when no frames are recognised.
 async fn stream_title(url: &str, proxy: Option<&Proxy>) -> std::io::Result<(String, String)> {
     let mut resp = http::get(url, proxy, &[("Icy-MetaData", "1")]).await?;
-    let br = bitrate(resp.header("icy-br"), resp.header("ice-audio-info"));
+    let icy = bitrate(resp.header("icy-br"), resp.header("ice-audio-info"));
+    let measured = |audio: &[u8]| audio::measure(audio).map(|b| b.label()).unwrap_or_else(|| icy.clone());
     // A stream without ICY metadata has no title, only the bitrate.
     let Some(metaint) = resp.header("icy-metaint").and_then(|v| v.trim().parse::<usize>().ok()) else {
+        let mut audio = vec![0u8; MEASURE_BYTES];
+        let br = match resp.body.read_full(&mut audio).await {
+            Ok(()) => measured(&audio),
+            Err(_) => icy.clone(),
+        };
         return Ok((String::new(), br));
     };
-    resp.body.skip(metaint).await?;
+    // The audio before the first metadata block, kept to measure the bitrate.
+    let mut audio = vec![0u8; metaint.min(64 * 1024)];
+    resp.body.read_full(&mut audio).await?;
+    resp.body.skip(metaint - audio.len()).await?;
+    let br = measured(&audio);
     let mut len = [0u8];
     resp.body.read_full(&mut len).await?;
     let mut meta = vec![0u8; len[0] as usize * 16];
@@ -742,7 +758,7 @@ async fn check_stream(url: &str, proxy: Option<&Proxy>) -> CheckResult {
     let mut r = CheckResult {
         status: resp.status_text.clone(),
         content_type: resp.header("content-type").unwrap_or("").to_string(),
-        bitrate: resp.header("icy-br").unwrap_or("").to_string(),
+        bitrate: bitrate(resp.header("icy-br"), resp.header("ice-audio-info")),
         icy_name: resp.header("icy-name").unwrap_or("").to_string(),
         ..Default::default()
     };
@@ -754,6 +770,8 @@ async fn check_stream(url: &str, proxy: Option<&Proxy>) -> CheckResult {
     const WANT: usize = 64 * 1024;
     let start = Instant::now();
     let mut buf = vec![0u8; 16 * 1024];
+    // Kept to measure the real bitrate from the audio frames.
+    let mut audio = Vec::with_capacity(WANT + buf.len());
     let mut n = 0;
     while n < WANT {
         match timeout_at(deadline, resp.body.read(&mut buf)).await {
@@ -761,7 +779,10 @@ async fn check_stream(url: &str, proxy: Option<&Proxy>) -> CheckResult {
                 r.error = format!("stream stopped after {n} bytes");
                 return r;
             }
-            Ok(Ok(k)) => n += k,
+            Ok(Ok(k)) => {
+                audio.extend_from_slice(&buf[..k]);
+                n += k;
+            }
             Ok(Err(e)) => {
                 r.error = format!("stream stopped after {n} bytes: {e}");
                 return r;
@@ -775,6 +796,9 @@ async fn check_stream(url: &str, proxy: Option<&Proxy>) -> CheckResult {
                 return r;
             }
         }
+    }
+    if let Some(b) = audio::measure(&audio) {
+        r.bitrate = b.label();
     }
     r.ok = true;
     r
