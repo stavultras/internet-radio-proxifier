@@ -19,11 +19,22 @@
 		</div>
 
 		<div id="panel-stations" class="tab-panel" role="tabpanel" aria-labelledby="tab-stations">
+			<!-- The invisible buttons take the room of the rows' test and remove
+			     buttons, so the box lines up with the rows' proxy boxes. -->
+			<div class="list-head">
+				<span class="all-hint">for all stations:</span>
+				<div class="row-buttons">
+					<label class="proxy-toggle"><input type="checkbox" id="proxy-all"> proxy</label>
+					<button type="button" class="spacer" tabindex="-1" aria-hidden="true">test</button>
+					<button type="button" class="spacer" tabindex="-1" aria-hidden="true">&times;</button>
+				</div>
+			</div>
 			<ol id="station-list"></ol>
 
 			<div class="settings-actions">
 				<button type="button" id="btn-add">Add</button>
 				<button type="button" id="btn-test-all">Test all</button>
+				<button type="button" id="btn-test-direct" title="Test every station without the proxy, to see which ones need it">Test all without proxy</button>
 				<button type="button" id="btn-proxy-failing" title="Run tests, then tick proxy for stations that only work through it">Proxy the failing</button>
 			</div>
 		</div>
@@ -59,6 +70,7 @@
 		<template id="row-template">
 			<li class="station-row">
 				<button type="button" class="b-drag" title="Drag to reorder (or focus and use the arrow keys)" aria-label="Reorder">&#x283F;</button>
+				<span class="row-num" aria-hidden="true"></span>
 				<div class="fields">
 					<input class="f-name" placeholder="Station name" autocomplete="off" aria-label="Station name">
 					<input class="f-url" placeholder="https://stream.example.com/live.mp3" autocomplete="off" inputmode="url" aria-label="Stream URL">

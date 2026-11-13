@@ -94,8 +94,19 @@ function refresh() {
 // Without a proxy a station's proxy box cannot be ticked (it would not work).
 // A ticked one can still be unticked, so clearing the proxy never locks it.
 const PROXY_TITLE = 'Connect to this station through the proxy';
+const proxyAll = document.querySelector('#proxy-all');
 function updateProxyToggles(rs = rows()) {
 	const noProxy = !proxyInput.value.trim();
+	// "proxy for all": ticked when every station is, half when some are.
+	const ticked = rs.filter(r => r.querySelector('.f-proxy').checked).length;
+	proxyAll.checked = rs.length > 0 && ticked === rs.length;
+	proxyAll.indeterminate = ticked > 0 && ticked < rs.length;
+	const allOff = noProxy && ticked === 0;
+	const allLabel = proxyAll.closest('.proxy-toggle');
+	proxyAll.disabled = allOff;
+	allLabel.classList.toggle('off', allOff);
+	allLabel.title = allOff ? 'Set a proxy on the Settings tab first'
+		: noProxy ? 'Untick proxy for every station' : 'Tick or untick proxy for every station';
 	for (const r of rs) {
 		const box = r.querySelector('.f-proxy');
 		const off = noProxy && !box.checked;
@@ -105,6 +116,20 @@ function updateProxyToggles(rs = rows()) {
 		label.title = off ? 'Set a proxy on the Settings tab first' : PROXY_TITLE;
 	}
 }
+
+// Without a proxy it can only untick, like the boxes of the rows.
+proxyAll.addEventListener('change', () => {
+	const on = proxyAll.checked && !!proxyInput.value.trim();
+	for (const r of rows()) {
+		const box = r.querySelector('.f-proxy');
+		if (box.checked === on) continue;
+		box.checked = on;
+		const out = r.querySelector('.test-result');
+		out.textContent = '';
+		out.className = 'test-result';
+	}
+	refresh();
+});
 
 function addRow(st, focus) {
 	const r = tpl.content.firstElementChild.cloneNode(true);
@@ -164,7 +189,8 @@ async function testRow(r, forceProxy) {
 		const res = await api('POST', 'check', {url, useProxy, proxy: proxyInput.value.trim()});
 		const info = [res.contentType, res.bitrate && res.bitrate + ' kbps', res.icyName].filter(Boolean).join(' · ');
 		out.className = 'test-result ' + (res.ok ? 'ok' : 'bad');
-		out.textContent = (res.ok ? '✓ works' : '✗ ' + res.error) + (useProxy ? ' [via proxy]' : '') + (info ? '  (' + info + ')' : '');
+		const how = useProxy ? ' [via proxy]' : r.querySelector('.f-proxy').checked ? ' [without proxy]' : '';
+		out.textContent = (res.ok ? '✓ works' : '✗ ' + res.error) + how + (info ? '  (' + info + ')' : '');
 		return res.ok;
 	} catch (e) {
 		out.className = 'test-result bad';
@@ -191,6 +217,29 @@ randomInput.addEventListener('change', refresh);
 retriesInput.addEventListener('input', refresh);
 retriesInput.addEventListener('change', () => { retriesInput.value = retriesValue(); refresh(); });
 
+// Tests the rows a few at a time (browsers only open about 6 connections to
+// one server anyway) and shows the progress: lists can have hundreds.
+async function testRows(rs, forceProxy, label) {
+	const results = new Array(rs.length);
+	let next = 0, done = 0;
+	setMsg(`${label} 0 of ${rs.length}…`);
+	async function worker() {
+		while (next < rs.length) {
+			const i = next++;
+			results[i] = await testRow(rs[i], forceProxy);
+			setMsg(`${label} ${++done} of ${rs.length}…`);
+		}
+	}
+	await Promise.all(Array.from({length: Math.min(6, rs.length)}, worker));
+	return results;
+}
+
+// "#3, #17, #40" for the rows at those positions in the list.
+function stationNumbers(rs) {
+	const all = rows();
+	return rs.map(r => '#' + (all.indexOf(r) + 1)).join(', ');
+}
+
 document.querySelector('#btn-proxy-failing').addEventListener('click', async e => {
 	if (!proxyInput.value.trim()) {
 		setMsg('Enter a proxy first (Settings tab)', 'bad');
@@ -199,12 +248,10 @@ document.querySelector('#btn-proxy-failing').addEventListener('click', async e =
 		return;
 	}
 	e.target.disabled = true;
-	setMsg('Testing direct connections…');
 	const rs = rows();
-	const direct = await Promise.all(rs.map(r => testRow(r, false)));
+	const direct = await testRows(rs, false, 'Testing without proxy:');
 	const failing = rs.filter((r, i) => !direct[i]);
-	setMsg(`Testing ${failing.length} failing stations via proxy…`);
-	const viaProxy = await Promise.all(failing.map(r => testRow(r, true)));
+	const viaProxy = await testRows(failing, true, 'Testing the failing ones via proxy:');
 	let fixed = 0;
 	failing.forEach((r, i) => { if (viaProxy[i]) { r.querySelector('.f-proxy').checked = true; fixed++; } });
 	// Stations that work directly don't need the proxy.
@@ -277,9 +324,21 @@ document.querySelector('#btn-add').addEventListener('click', () => {
 document.querySelector('#btn-test-all').addEventListener('click', async e => {
 	if (!rows().length) return;
 	e.target.disabled = true;
-	const results = await Promise.all(rows().map(r => testRow(r)));
-	const bad = results.filter(ok => !ok).length;
-	setMsg(bad ? `${bad} of ${results.length} stations not working` : `All ${results.length} stations work`, bad ? 'bad' : 'ok');
+	const rs = rows();
+	const results = await testRows(rs, undefined, 'Testing');
+	const bad = rs.filter((r, i) => !results[i]);
+	setMsg(bad.length ? `${bad.length} of ${rs.length} stations not working: ${stationNumbers(bad)}` : `All ${rs.length} stations work`, bad.length ? 'bad' : 'ok');
+	e.target.disabled = false;
+});
+
+// Only reports: nothing is ticked or unticked (Proxy the failing does that).
+document.querySelector('#btn-test-direct').addEventListener('click', async e => {
+	if (!rows().length) return;
+	e.target.disabled = true;
+	const rs = rows();
+	const results = await testRows(rs, false, 'Testing without proxy:');
+	const bad = rs.filter((r, i) => !results[i]);
+	setMsg(bad.length ? `${bad.length} of ${rs.length} stations fail without proxy: ${stationNumbers(bad)}` : `All ${rs.length} stations work without proxy`, bad.length ? 'bad' : 'ok');
 	e.target.disabled = false;
 });
 

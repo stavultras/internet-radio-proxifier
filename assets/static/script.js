@@ -131,8 +131,8 @@ function updateMediaSessionMetadata() {
 	const stationTitleEl = document.querySelector('#station-title');
 	if (!stationNameEl || !stationTitleEl) return;
 
-	// #station-name is rendered as "[Name]" inside an <a>; strip the brackets.
-	const rawName = (stationNameEl.innerText || '').trim();
+	// The name is rendered as "[Name]" inside an <a>; strip the brackets.
+	const rawName = (stationNameEl.querySelector('a')?.innerText || '').trim();
 	const name = rawName.replace(/^\[/, '').replace(/\]$/, '');
 	const rawTitle = (stationTitleEl.innerText || '').trim();
 
@@ -383,16 +383,35 @@ setInterval(() => {
 const stationDialog = document.querySelector('#station-dialog');
 const stationPicker = document.querySelector('#station-picker');
 const stationFilter = document.querySelector('#station-filter');
+const stationCount = document.querySelector('#station-count');
 
-function currentStationName() {
-	return (document.querySelector('#station-name')?.innerText || '').trim().replace(/^\[(.*)\]$/, '$1');
+// "(448)", or "(12 of 448)" while the filter hides some.
+function updateStationCount() {
+	const all = stationPicker.children.length;
+	const shown = [...stationPicker.children].filter(li => !li.hidden).length;
+	stationCount.textContent = shown === all ? `(${all})` : `(${shown} of ${all})`;
 }
 
+function currentStationName() {
+	return (document.querySelector('#station-name a')?.innerText || '').trim().replace(/^\[(.*)\]$/, '$1');
+}
+
+// Index of the station in the player box, or -1 before the first one arrives.
+function currentStationIndex() {
+	const i = document.querySelector('#station-name')?.dataset.index;
+	return i === undefined ? -1 : Number(i);
+}
+
+// Matches the name, or the station number exactly ("12" finds number 12,
+// not 112).
 function applyStationFilter() {
-	const q = stationFilter.value.trim().toLowerCase();
+	const q = stationFilter.value.trim().toLowerCase().replace(/^#/, '');
 	for (const li of stationPicker.children) {
-		li.hidden = q !== '' && !li.textContent.toLowerCase().includes(q);
+		const b = li.firstChild;
+		const name = b.querySelector('.pick-name').textContent.toLowerCase();
+		li.hidden = q !== '' && !name.includes(q) && String(Number(b.dataset.index) + 1) !== q;
 	}
+	updateStationCount();
 }
 
 async function openStationPicker() {
@@ -404,13 +423,17 @@ async function openStationPicker() {
 		status.innerText = 'Could not load station list';
 		return;
 	}
-	const cur = currentStationName();
+	const cur = currentStationIndex();
 	stationPicker.replaceChildren(...stations.map(({name, proxy}, i) => {
 		const li = document.createElement('li');
 		const b = document.createElement('button');
 		b.type = 'button';
 		b.className = 'station-pick';
 		b.dataset.index = i;
+		const num = document.createElement('span');
+		num.className = 'pick-num';
+		num.textContent = i + 1;
+		b.appendChild(num);
 		const label = document.createElement('span');
 		label.className = 'pick-name';
 		label.textContent = name;
@@ -422,13 +445,14 @@ async function openStationPicker() {
 			tag.title = 'Plays through the proxy';
 			b.appendChild(tag);
 		}
-		if (name === cur) {
+		if (i === cur) {
 			b.setAttribute('aria-current', 'true');
 		}
 		li.appendChild(b);
 		return li;
 	}));
 	stationFilter.value = '';
+	updateStationCount();
 	stationDialog.showModal();
 	const active = stationPicker.querySelector('[aria-current]');
 	if (active) {
@@ -442,7 +466,10 @@ document.querySelector('.station-dialog-close').addEventListener('click', () => 
 stationFilter.addEventListener('input', applyStationFilter);
 stationFilter.addEventListener('keydown', e => {
 	if (e.key === 'Enter') {
-		stationPicker.querySelector('li:not([hidden]) button')?.click();
+		// A number goes to that station even if a name also matches.
+		const n = Number(stationFilter.value.trim().replace(/^#/, ''));
+		const exact = Number.isInteger(n) && n > 0 ? stationPicker.querySelector(`[data-index="${n - 1}"]`) : null;
+		(exact || stationPicker.querySelector('li:not([hidden]) button'))?.click();
 	}
 });
 // Clicking the backdrop closes the dialog.

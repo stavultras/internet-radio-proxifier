@@ -18,7 +18,7 @@ body.settings > * { margin-bottom: 16px; }
 }
 .settings button { cursor: pointer; }
 .settings input { font-size: 14px; }
-.station-row button {
+.station-row button, .list-head button {
 	min-width: 0;
 	min-height: 0;
 	margin: 0;
@@ -42,10 +42,11 @@ body.settings > * { margin-bottom: 16px; }
 .settings input.invalid { border-color: #ff6b6b; }
 
 /* Rows are grid items (no list numbers), so no inset: they line up with the proxy box. */
-#station-list { padding-left: 0; margin: 0; }
+#station-list { padding-left: 0; margin: 0; counter-reset: station; }
 .station-row {
+	counter-increment: station;
 	display: grid;
-	grid-template-columns: auto 1fr auto;
+	grid-template-columns: auto auto 1fr auto;
 	gap: 6px 8px;
 	align-items: center;
 	padding: 8px 0;
@@ -53,7 +54,8 @@ body.settings > * { margin-bottom: 16px; }
 }
 .station-row .fields {
 	display: grid;
-	grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+	/* name and URL get the same width: names are often long, URLs can scroll */
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 	gap: 6px;
 }
 .row-buttons { display: flex; gap: 6px; align-items: center; }
@@ -72,6 +74,14 @@ body.settings > * { margin-bottom: 16px; }
 }
 .settings .station-row .b-drag:hover:not(:disabled) { background: none; color: var(--color); opacity: 1; }
 .settings .station-row .b-drag:disabled { cursor: default; opacity: .2; }
+/* Station number, the same as in the player; follows reordering. */
+.row-num::before { content: counter(station); }
+.row-num {
+	min-width: 3ch;
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+	opacity: .6;
+}
 .drag-active, .drag-active * { cursor: grabbing !important; user-select: none; }
 .station-row.dragging { background: rgba(127, 255, 212, .12); outline: 1px dashed var(--color); }
 .test-result { grid-column: 1 / -1; font-size: .9em; min-height: 0; }
@@ -114,7 +124,7 @@ body.settings > .tab-panel { margin-bottom: 0; }
 body.settings #settings-msg { margin: 13px 0 8px; }
 /* on the Settings tab the box above has no shadow */
 body.settings #panel-settings:not([hidden]) ~ #settings-msg { margin-top: 8px; }
-/* Add / Test all / Proxy the failing: no extra space under the last row of buttons */
+/* Add / Test all / Test all without proxy / Proxy the failing: no extra space under the last row of buttons */
 #panel-stations .settings-actions button { margin-bottom: 0; }
 body.settings .save-actions { margin-top: 0; }
 
@@ -124,9 +134,9 @@ body.settings .save-actions { margin-top: 0; }
 #settings-msg.dirty { color: #ffd166; }
 
 @media (max-width: 640px) {
-	.station-row { grid-template-columns: auto 1fr; }
-	.station-row .b-drag { grid-row: span 2; }
-	.row-buttons { grid-column: 2; }
+	.station-row { grid-template-columns: auto auto 1fr; }
+	.station-row .b-drag, .row-num { grid-row: span 2; }
+	.row-buttons { grid-column: 3; }
 	.station-row .fields { grid-template-columns: 1fr; }
 	.row-buttons { justify-content: flex-end; }
 }
@@ -160,6 +170,17 @@ body.settings .save-actions { margin-top: 0; }
 	margin-right: 4px;
 }
 .proxy-toggle.off { opacity: .4; cursor: default; }
+/* "for all stations: proxy" above the list, over the rows' proxy boxes */
+.list-head {
+	display: flex;
+	justify-content: flex-end;
+	align-items: center;
+	gap: 8px;
+	padding-bottom: 8px;
+	border-bottom: 1px dashed rgba(127, 255, 212, .3);
+}
+.list-head .all-hint { font-size: 13px; opacity: .6; }
+.list-head .spacer { visibility: hidden; }
 .settings .proxy-toggle input {
 	width: auto;
 	accent-color: var(--color);

@@ -108,7 +108,8 @@ impl App {
     }
 
     /// Station name, song title and the corner marks (proxy, bitrate).
-    fn info_html(&self, st: &Station, title: &str) -> String {
+    /// Player box for station `i` (shown to people as number i + 1).
+    fn info_html(&self, i: usize, st: &Station, title: &str) -> String {
         let proxy = if self.proxy_for(st).is_some() {
             r#"<span class="tag-proxy" title="Plays through the proxy">proxy</span>"#
         } else {
@@ -117,7 +118,8 @@ impl App {
         let br = self.bitrates.lock().unwrap().get(&st.url).cloned().unwrap_or_default();
         let br = if br.is_empty() { String::new() } else { format!("{} kbps", esc(&br)) };
         format!(
-            "<div id=\"station-tags\">{proxy}<span class=\"tag-bitrate\">{br}</span></div>\n<div id=\"station-name\"><a class=\"stationurl\" href=\"{}\">[{}]</a></div>\n<div id=\"station-title\">{}</div>",
+            "<div id=\"station-tags\">{proxy}<span class=\"tag-bitrate\">{br}</span></div>\n<div id=\"station-name\" data-index=\"{i}\"><span class=\"station-num\">#{}</span> <a class=\"stationurl\" href=\"{}\">[{}]</a></div>\n<div id=\"station-title\">{}</div>",
+            i + 1,
             esc(&st.url),
             esc(&st.name),
             esc(title)
@@ -125,7 +127,7 @@ impl App {
     }
 
     fn station_info(&self, list: &[Station], i: usize) -> Option<String> {
-        list.get(i).map(|st| self.info_html(st, &self.cached_title(&st.url)))
+        list.get(i).map(|st| self.info_html(i, st, &self.cached_title(&st.url)))
     }
 
     fn send(&self, id: u64, html: String) {
@@ -260,7 +262,7 @@ async fn refresh_station(app: &App, list: &[Station], k: usize) {
             app.cached_title(&st.url)
         }
     };
-    app.broadcast(k, &app.info_html(st, &title));
+    app.broadcast(k, &app.info_html(k, st, &title));
 }
 
 /// Starts a title fetch for station k unless one for the same stream runs.
@@ -708,7 +710,7 @@ fn remap_sessions(app: &App, old: &[Station], cur: &[Station]) {
         s.station = new_idx;
         // The relayed URL contains the index, so the player needs the new one.
         if found.is_none() || new_idx != idx {
-            let _ = s.tx.send(app.info_html(&cur[new_idx], &app.cached_title(&cur[new_idx].url)));
+            let _ = s.tx.send(app.info_html(new_idx, &cur[new_idx], &app.cached_title(&cur[new_idx].url)));
             let _ = s.tx.send(App::player_html(new_idx));
         }
     }

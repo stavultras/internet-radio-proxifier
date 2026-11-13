@@ -266,6 +266,10 @@ input::placeholder {
 	margin: 0;
 	font-size: 18px;
 }
+#station-count {
+	font-weight: normal;
+	opacity: .6;
+}
 #station-dialog button.station-dialog-close {
 	min-width: 0;
 	min-height: 0;
@@ -312,6 +316,20 @@ input::placeholder {
 	display: flex;
 	align-items: center;
 	gap: 8px;
+}
+/* Station numbers, so a station is easy to find again. */
+#station-name .station-num {
+	opacity: .6;
+}
+#station-dialog .pick-num {
+	flex: none;
+	min-width: 3ch;
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+	opacity: .6;
+}
+#station-dialog .station-pick[aria-current] .pick-num {
+	opacity: 1;
 }
 #station-dialog .pick-name {
 	flex: 1;

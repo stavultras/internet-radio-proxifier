@@ -34,8 +34,13 @@ and has since been rewritten in Rust.
 `http://ADDRESS:PORT/`
 
 - **Previous / Next station**, **Random station**, **Pause**
-- **All stations**: a list of all stations with a filter; stations that go
-  through the proxy are marked
+- **All stations**: a list of all stations with a filter; the title shows how
+  many there are ("Stations (12 of 448)" while filtering), and stations that
+  go through the proxy are marked. Typing a number in the filter finds that
+  station (Enter plays it)
+- Every station has a number, shown next to its name in the player, in the
+  station list and on the settings page, so a station with a good song is easy
+  to find again
 - The top corners of the player show **PROXY** when the station plays through
   the proxy, and the bitrate. The bitrate is measured from the audio itself
   (MP3 and AAC frames), not taken from what the station claims; `~173 kbps`
@@ -62,11 +67,14 @@ away.
 **Stations** tab:
 
 - Add, rename and remove stations; drag the grip on the left to reorder
-  them (or focus it and use the arrow keys)
+  them (or focus it and use the arrow keys); the numbers follow the new order
 - **Test** checks that a station plays and shows its format and bitrate;
-  **Test all** checks every station
+  **Test all** checks every station and lists the numbers of the ones that
+  fail. **Test all without proxy** does the same with the proxy off for every
+  station, to see which ones really need it; it changes nothing
 - **proxy**: this station goes through the proxy. It can only be ticked
-  when a proxy is set on the Settings tab
+  when a proxy is set on the Settings tab. **for all stations: proxy** above the list
+  ticks or unticks it for every station at once
 - **Proxy the failing**: tests every station directly and ticks *proxy*
   for the ones that only work through the proxy
 
