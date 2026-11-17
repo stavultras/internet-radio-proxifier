@@ -58,7 +58,7 @@ define Package/internet-radio-proxifier/install
 	$(INSTALL_DIR) $(1)/usr/bin $(1)/etc/init.d $(1)/etc/config $(1)/usr/share/internet-radio-proxifier $(1)/lib/upgrade/keep.d
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/bin/internet-radio-proxifier $(1)/usr/bin/internet-radio-proxifier
 	$(INSTALL_BIN) $(REPO_DIR)/openwrt/files/internet-radio-proxifier.init $(1)/etc/init.d/internet-radio-proxifier
-	$(INSTALL_CONF) $(REPO_DIR)/openwrt/files/radio.config $(1)/etc/config/internet-radio-proxifier
+	$(INSTALL_CONF) $(REPO_DIR)/openwrt/files/internet-radio-proxifier.config $(1)/etc/config/internet-radio-proxifier
 	$(INSTALL_DATA) $(REPO_DIR)/settings.example.ini $(1)/usr/share/internet-radio-proxifier/settings.example.ini
 	echo /etc/internet-radio-proxifier/ > $(1)/lib/upgrade/keep.d/internet-radio-proxifier
 endef
