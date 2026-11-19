@@ -1,5 +1,5 @@
-# Build, test and release. Runs only when asked for: ordinary pushes do not
-# start it (test locally with build.sh first).
+# Build, test and release. Ordinary pushes do not start it (test locally
+# with build.sh first); pull requests do.
 #
 #   VERSION changed       push to main that changes VERSION: build all
 #                         packages (build.sh), run the unit tests, start every
@@ -10,6 +10,9 @@
 #   tag v<VERSION> pushed the same build and tests, then publish the packages
 #                         as GitHub Release v<VERSION> (to release a version
 #                         again: delete its release and tag, push the tag)
+#   pull request          the same build and tests when the PR changes more
+#                         than markdown; packages kept as workflow artifacts,
+#                         no release
 #   manual run            Actions tab or `gh workflow run build.yml`: the same
 #                         build and tests, packages kept as workflow
 #                         artifacts, no release
@@ -25,8 +28,12 @@ name: Build/release
 on:
   push:
     branches: [main]
+    # Only VERSION changes run CI on push; markdown and everything else are
+    # already excluded. (paths and paths-ignore cannot be combined.)
     paths: [VERSION]
     tags: ['v*']
+  pull_request:
+    paths-ignore: ['**.md']
   workflow_dispatch:
 
 permissions:
