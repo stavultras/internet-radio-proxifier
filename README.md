@@ -37,7 +37,8 @@ and has since been rewritten in Rust.
 - **All stations**: a list of all stations with a filter; the title shows how
   many there are ("Stations (12 of 448)" while filtering), and stations that
   go through the proxy are marked. Typing a number in the filter finds that
-  station (Enter plays it)
+  station (Enter plays it). The **&#x00d7;** beside a station removes it (after
+  a confirmation); the last station cannot be removed
 - Every station has a number, shown next to its name in the player, in the
   station list and on the settings page, so a station with a good song is easy
   to find again. `http://ADDRESS:PORT/station/N` is the stream of station N

@@ -57,7 +57,7 @@ need it).
 
 ```sh
 cargo build --release                  # native release binary
-cargo test --locked                    # 16 unit tests, all offline
+cargo test --locked                    # 19 unit tests, all offline
 cargo run -- -a 127.0.0.1 -p 19876 -c /tmp/radio-settings.ini
 curl -sS http://127.0.0.1:19876/ | head
 ./build.sh                             # all release packages into dist/
@@ -119,6 +119,7 @@ file path, websocket sessions, song-title and bitrate caches (both keyed by
 | `GET /` | player page (`{{url}}`/`{{autoplay}}` placeholders filled in) |
 | `GET /ws` | player websocket (htmx WS extension) |
 | `GET /api/stations` | station picker data, **in play order** (favorites first) |
+| `POST /api/stations/remove` | remove one station by name from the player picker; saves and remaps listeners |
 | `GET /static/{path}` | embedded assets |
 | `GET /sw.js`, `GET /manifest.webmanifest` | same assets at root, for PWA scope |
 | `GET /settings` | settings page (optional Basic auth) |
@@ -172,13 +173,20 @@ waited ~43 ms for ACKs; with it the name arrives in ~1 ms. Keep both.
   and broadcasts the new star. The maintainer explicitly asked for this
   after a star was lost on refresh — do not make favorites depend on the
   settings page's Save button.
+- **The picker removes stations by name.** `POST /api/stations/remove`
+  (`{name}` JSON) calls `stations::remove()`, saves immediately like the
+  star, and `remap_sessions()` moves listeners. The last station is
+  refused server-side and its × is disabled in the picker. It works without
+  the settings password (the player is the open page); the JSON body keeps
+  a cross-site form from triggering it.
 - The last station is restored in the browser **by name**, not by position
   in `/api/stations` (that list is play-ordered): `loadStationNames()` places
   each name at its own `index`. A bug here once made a star look lost after
   reload — don't regress it.
 - `remap_sessions()` matches listeners to the new list **by stream URL**
   after a save/reorder and re-sends info + source when the index changed;
-  listeners whose station was removed move to station 0.
+  listeners whose station was removed move to the next station that is
+  still there, or to the last one when the removed station was last.
 
 ### Settings file (`settings.ini`)
 
@@ -281,6 +289,11 @@ dependencies.
 - **Name before stream.** On a switch the server sends station info before
   the new `<source>`; the name shows immediately, not after the first audio
   buffer.
+- **The source says which station it is.** `#audio-source` carries
+  `data-station` (the stream URL) as well as `src` and `data-index`. A
+  removal can keep the number and the `/station/N` URL while the station
+  changes, so the player must compare `data-station` too; otherwise the
+  removed stream keeps playing under the next station's name.
 - **No layout jump.** `#station-name` and `#station-title` reserve a line
   (`min-height: 1.3em`).
 - **Status line is real state:** connecting, playing, buffering, retrying,
@@ -308,7 +321,12 @@ dependencies.
   filtering. The filter matches names or an **exact station number** ("12"
   finds #12, not #112; a leading `#` is stripped); Enter plays the exact
   number match first. Rows show number, favorite star, name, proxy tag; the
-  current station gets `aria-current` and is scrolled into view.
+  current station gets `aria-current` and is scrolled into view. Each row
+  also has a **×** remove button: it confirms, removes through the API, and
+  reloads the list; the last remaining station's × is disabled. After a
+  removal, keep the picker and page scroll position and focus the row that
+  took the removed one's place — never focus the first row (browsers scroll
+  the focused element into view, which jumps the list to the top).
 - **Random button** picks client-side, never the current station, needs ≥2
   stations. `random_start` (server-side) only applies with autoplay, on the
   first connect.
@@ -549,7 +567,7 @@ IPKG_BUILD=$(ls ~/.cache/openwrt-toolchains/ipkg-build-* | head -1) \
 
 Before reporting work done:
 
-1. `cargo test --locked` passes (16 tests, offline).
+1. `cargo test --locked` passes (19 tests, offline).
 2. `cargo build --release --locked` passes.
 3. Start the binary with a **temporary** settings file on a non-default
    port (record `$!`, kill that PID) and check:
@@ -582,10 +600,10 @@ Before reporting work done:
 
 - Devices: the main test router is `192.168.200.254` (TR3000, Filogic 820,
   aarch64_cortex-a53, 512 MB RAM, 128 MB NAND) — install there when asked.
-  A second x86_64 OpenWrt box (`192.168.200.252`) was set aside ("forget
-  about .252 for now") and stays on an old build. An offline test router
-  (`192.168.203.254`) was reached via a `utest` Wi-Fi link that has since
-  been dropped; the maintainer enters Wi-Fi passphrases themselves.
+  The x86_64 OpenWrt box `192.168.200.252` is the first stop for tests
+  (the maintainer asked for new builds there before `.254`). An offline test
+  router (`192.168.203.254`) was reached via a `utest` Wi-Fi link that has
+  since been dropped; the maintainer enters Wi-Fi passphrases themselves.
 - The default port is **9876** ("easy to remember"); 8123 was dropped
   because Home Assistant uses it, 8765 because motionEye/AnkiConnect do.
 - When starting a test server in the background, record `$!` and kill that

@@ -101,10 +101,13 @@ impl App {
         self.titles.lock().unwrap().get(url).cloned().unwrap_or_default()
     }
 
-    fn player_html(i: usize) -> String {
+    /// The stream element for station `i`. `data-station` is the stream URL:
+    /// a removal can leave the number the same while the station changes.
+    fn player_html(i: usize, st: &Station) -> String {
         format!(
-            r#"<source id="audio-source" src="{}" data-index="{i}" type="audio/mpeg">"#,
-            esc(&Self::station_url(i))
+            r#"<source id="audio-source" src="{}" data-index="{i}" data-station="{}" type="audio/mpeg">"#,
+            esc(&Self::station_url(i)),
+            esc(&st.url)
         )
     }
 
@@ -268,6 +271,12 @@ async fn refresh_station(app: &App, list: &[Station], k: usize) {
             app.cached_title(&st.url)
         }
     };
+    // The list can change while the fetch runs (a removal or a reorder). Do
+    // not put the old station's name back onto whatever now sits at k.
+    let current = app.stations();
+    if current.get(k).map(|s| s.url.as_str()) != Some(st.url.as_str()) {
+        return;
+    }
     app.broadcast(k, &app.info_html(k, st, &title));
 }
 
@@ -367,21 +376,16 @@ fn handle_ws_message(app: &Shared, id: u64, text: &str) {
     if let Some(info) = app.station_info(&list, station) {
         app.send(id, info);
     }
-    app.send(id, App::player_html(station));
+    app.send(id, App::player_html(station, &list[station]));
     refresh_async(app, &list, station);
 }
 
-/// Stars or unstars station `i` from the player: saves the file and shows the
-/// new star to everyone listening to it.
-fn toggle_favorite(app: &Shared, i: usize) {
-    let _guard = app.save_lock.lock().unwrap();
-    let mut list = (*app.stations()).clone();
-    let Some(st) = list.get_mut(i) else { return };
-    st.favorite = !st.favorite;
-    let password = match stations::load(&app.stations_file) {
-        Ok(s) => s.password,
-        Err(e) => return eprintln!("Cannot read {}: {e}", app.stations_file),
-    };
+/// Writes `list` with the current options. The settings page password is
+/// re-read from the file: it can only be set by editing the file.
+fn save_station_list(app: &App, list: Vec<Station>) -> Result<stations::Settings, String> {
+    let password = stations::load(&app.stations_file)
+        .map_err(|e| format!("cannot read {}: {e}", app.stations_file))?
+        .password;
     let settings = stations::Settings {
         stations: list,
         proxy: app.proxy_raw(),
@@ -391,14 +395,42 @@ fn toggle_favorite(app: &Shared, i: usize) {
         random: app.random.load(Ordering::Relaxed),
         retries: app.retries.load(Ordering::Relaxed) as u32,
     };
-    if let Err(e) = stations::save(&app.stations_file, &settings) {
-        return eprintln!("Saving favorite failed: {e}");
-    }
+    stations::save(&app.stations_file, &settings)
+        .map_err(|e| format!("could not save {}: {e}", app.stations_file))?;
+    Ok(settings)
+}
+
+/// Stars or unstars station `i` from the player: saves the file and shows the
+/// new star to everyone listening to it.
+fn toggle_favorite(app: &Shared, i: usize) {
+    let _guard = app.save_lock.lock().unwrap();
+    let mut list = (*app.stations()).clone();
+    let Some(st) = list.get_mut(i) else { return };
+    st.favorite = !st.favorite;
+    let settings = match save_station_list(app, list) {
+        Ok(s) => s,
+        Err(e) => return eprintln!("Saving favorite failed: {e}"),
+    };
     let list = Arc::new(settings.stations);
     *app.stations.write().unwrap() = list.clone();
     let st = &list[i];
     eprintln!("{} {} favorites", st.name, if st.favorite { "added to" } else { "removed from" });
     app.broadcast(i, &app.info_html(i, st, &app.cached_title(&st.url)));
+}
+
+/// Removes the station called `name` from the player's list and saves the
+/// file. Listeners on it move to the next station that is left; the others
+/// keep their stream through `remap_sessions`.
+fn remove_station(app: &Shared, name: &str) -> Result<usize, String> {
+    let _guard = app.save_lock.lock().unwrap();
+    let old = app.stations();
+    let list = stations::remove((*old).clone(), name)?;
+    let settings = save_station_list(app, list)?;
+    let new = Arc::new(settings.stations);
+    *app.stations.write().unwrap() = new.clone();
+    remap_sessions(app, &old, &new);
+    eprintln!("Removed station {name:?} ({} stations left)", new.len());
+    Ok(new.len())
 }
 
 async fn ws_client(app: Shared, mut sock: WebSocket) {
@@ -493,7 +525,12 @@ async fn index(State(app): State<Shared>) -> Html<String> {
         _ => "",
     };
     let attrs = format!("{autoplay} data-retries=\"{}\"", app.retries.load(Ordering::Relaxed));
-    Html(INDEX.replace("{{url}}", &esc(&App::station_url(0))).replace("{{autoplay}}", &attrs))
+    let list = app.stations();
+    let station = list.first().map(|s| s.url.as_str()).unwrap_or("");
+    Html(INDEX
+        .replace("{{url}}", &esc(&App::station_url(0)))
+        .replace("{{station}}", &esc(station))
+        .replace("{{autoplay}}", &attrs))
 }
 
 #[derive(Serialize)]
@@ -513,6 +550,29 @@ async fn api_stations(State(app): State<Shared>) -> Response {
         .map(|i| PickerEntry { index: i, name: &list[i].name, proxy: list[i].use_proxy, favorite: list[i].favorite })
         .collect();
     Json(out).into_response()
+}
+
+#[derive(Deserialize)]
+struct RemoveReq {
+    #[serde(default)]
+    name: String,
+}
+
+/// Removes a station from the picker. Like the favorite star it works without
+/// the settings page password: the player is the open page. A JSON body means
+/// a cross-site form cannot trigger it.
+async fn api_remove_station(State(app): State<Shared>, body: Bytes) -> Response {
+    let Ok(req) = serde_json::from_slice::<RemoveReq>(&body) else {
+        return json_error(StatusCode::BAD_REQUEST, "invalid JSON");
+    };
+    let name = req.name.trim();
+    if name.is_empty() {
+        return json_error(StatusCode::BAD_REQUEST, "station name is missing");
+    }
+    match remove_station(&app, name) {
+        Ok(count) => Json(serde_json::json!({ "ok": true, "count": count })).into_response(),
+        Err(e) => json_error(StatusCode::BAD_REQUEST, e),
+    }
 }
 
 /// The stream of station `index`, relayed through this server.
@@ -755,8 +815,19 @@ async fn settings_put(State(app): State<Shared>, headers: HeaderMap, body: Bytes
     Json(config_json(&app)).into_response()
 }
 
+/// The index a listener on `old[idx]` moves to after the list changed. If
+/// that stream is gone, the next station in `old` that still exists, or the
+/// last station when it was the last one.
+fn next_station(old: &[Station], cur: &[Station], index: &HashMap<&str, usize>, idx: usize) -> usize {
+    old.iter()
+        .skip(idx + 1)
+        .find_map(|st| index.get(st.url.as_str()).copied())
+        .unwrap_or_else(|| cur.len().saturating_sub(1))
+}
+
 /// Keeps every listener on the same stream after the list was reordered.
-/// Listeners whose station was removed are moved to station 0.
+/// Listeners whose station was removed are moved to the next station in the
+/// old list that still exists (the last one when it was the last station).
 fn remap_sessions(app: &App, old: &[Station], cur: &[Station]) {
     let mut index: HashMap<&str, usize> = HashMap::new();
     for (i, s) in cur.iter().enumerate() {
@@ -765,12 +836,12 @@ fn remap_sessions(app: &App, old: &[Station], cur: &[Station]) {
     for s in app.sessions.lock().unwrap().values_mut() {
         let idx = s.station;
         let found = old.get(idx).and_then(|st| index.get(st.url.as_str()).copied());
-        let new_idx = found.unwrap_or(0);
+        let new_idx = found.unwrap_or_else(|| next_station(old, cur, &index, idx));
         s.station = new_idx;
         // The relayed URL contains the index, so the player needs the new one.
         if found.is_none() || new_idx != idx {
             let _ = s.tx.send(app.info_html(new_idx, &cur[new_idx], &app.cached_title(&cur[new_idx].url)));
-            let _ = s.tx.send(App::player_html(new_idx));
+            let _ = s.tx.send(App::player_html(new_idx, &cur[new_idx]));
         }
     }
 }
@@ -1009,6 +1080,7 @@ fn main() {
     let router = Router::new()
         .route("/", get(index))
         .route("/api/stations", get(api_stations))
+        .route("/api/stations/remove", post(api_remove_station))
         .route("/ws", get(ws))
         .route("/static/{*path}", get(static_file))
         .route("/sw.js", get(|| async { serve_asset("sw.js") }))
@@ -1076,9 +1148,35 @@ mod tests {
     }
 
     #[test]
+    fn player_source_identifies_station() {
+        let st = Station { name: "A".into(), url: "http://x/a?b=1&c=2".into(), use_proxy: false, favorite: false };
+        let html = App::player_html(2, &st);
+        assert!(html.contains(r#"src="/station/3""#));
+        assert!(html.contains(r#"data-index="2""#));
+        assert!(html.contains(r#"data-station="http://x/a?b=1&amp;c=2""#));
+    }
+
+    #[test]
     fn station_urls_count_from_one() {
         assert_eq!(App::station_url(0), "/station/1");
         assert_eq!(App::station_url(446), "/station/447");
+    }
+
+    #[test]
+    fn removed_station_moves_to_next() {
+        fn index_of(list: &[Station]) -> HashMap<&str, usize> {
+            list.iter().enumerate().map(|(i, s)| (s.url.as_str(), i)).collect()
+        }
+        let st = |n: &str| Station { name: n.into(), url: format!("http://x/{n}"), use_proxy: false, favorite: false };
+        let old = [st("A"), st("B"), st("C"), st("D")];
+        // B removed: C is next (D when C is gone as well).
+        let cur = [st("A"), st("C"), st("D")];
+        assert_eq!(next_station(&old, &cur, &index_of(&cur), 1), 1);
+        let cur = [st("A"), st("D")];
+        assert_eq!(next_station(&old, &cur, &index_of(&cur), 1), 1);
+        // The last station was removed: stay on the last one that is left.
+        let cur = [st("A"), st("B"), st("C")];
+        assert_eq!(next_station(&old, &cur, &index_of(&cur), 3), 2);
     }
 
     #[test]

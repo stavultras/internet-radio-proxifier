@@ -188,6 +188,19 @@ pub fn render(s: &Settings) -> String {
     out
 }
 
+/// The list without the station called `name`. The last station cannot be
+/// removed: the player and the settings file need at least one.
+pub fn remove(mut list: Vec<Station>, name: &str) -> Result<Vec<Station>, String> {
+    let Some(i) = list.iter().position(|st| st.name == name) else {
+        return Err(format!("station {name:?} not found"));
+    };
+    if list.len() == 1 {
+        return Err("at least one station is required".into());
+    }
+    list.remove(i);
+    Ok(list)
+}
+
 /// The order Next / Previous and the station list go through: favorites
 /// first, then the others, each in the order of the file.
 pub fn play_order(list: &[Station]) -> Vec<usize> {
@@ -300,6 +313,15 @@ mod tests {
         assert_eq!(play_order(&[st(false), st(true), st(false), st(true)]), vec![1, 3, 0, 2]);
         assert_eq!(play_order(&[st(false), st(false)]), vec![0, 1]);
         assert_eq!(play_order(&[]), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn removing() {
+        let st = |n: &str| Station { name: n.into(), url: "http://x".into(), use_proxy: false, favorite: false };
+        let names = |l: Vec<Station>| l.into_iter().map(|s| s.name).collect::<Vec<_>>();
+        assert_eq!(names(remove(vec![st("A"), st("B"), st("C")], "B").unwrap()), ["A", "C"]);
+        assert!(remove(vec![st("A")], "A").is_err());
+        assert!(remove(vec![st("A"), st("B")], "Z").unwrap_err().contains("not found"));
     }
 
     #[test]

@@ -284,6 +284,12 @@ input::placeholder {
 	box-sizing: border-box;
 	font-size: 14px;
 }
+#station-dialog-msg {
+	font-size: 12px;
+	opacity: .85;
+}
+#station-dialog-msg:empty { display: none; }
+#station-dialog-msg.bad { color: #ff6b6b; opacity: 1; }
 #station-picker {
 	scrollbar-color: var(--color) var(--background-color);
 	list-style: none;
@@ -293,10 +299,16 @@ input::placeholder {
 	text-align: left;
 }
 #station-picker li {
+	display: flex;
+	align-items: stretch;
+	gap: 6px;
 	margin-bottom: 6px;
 }
+/* The flex display above would otherwise override the hidden attribute. */
+#station-picker li[hidden] { display: none; }
 #station-dialog .station-pick {
-	width: 100%;
+	flex: 1;
+	width: auto;
 	min-width: 0;
 	min-height: 0;
 	margin: 0;
@@ -356,6 +368,23 @@ input::placeholder {
 	top: 2px;
 	left: 2px;
 }
+/* Remove button beside each station row. */
+#station-dialog .station-remove {
+	flex: none;
+	min-width: 0;
+	min-height: 0;
+	margin: 0;
+	padding: 0 8px;
+	border-width: 1px;
+	box-shadow: 2px 2px 0 0;
+	font-size: 15px;
+	line-height: 1;
+	letter-spacing: 0;
+	opacity: .7;
+}
+#station-dialog .station-remove:hover:not(:disabled) { opacity: 1; }
+#station-dialog .station-remove:active { top: 2px; left: 2px; }
+#station-dialog .station-remove:disabled { opacity: .2; cursor: default; }
 
 /* Browser blocked autoplay: point at the Play button until the first click */
 body.needs-gesture #play-pause-button {

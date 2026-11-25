@@ -59,6 +59,9 @@ const RETRIES = Number(player.dataset.retries ?? 3);
 // Workaround to prevent player from playing when replaced
 let audioSource = document.querySelector('#audio-source');
 let currentSource = audioSource.src;
+// The stream URL: a removal can keep the number (and src) while changing the
+// station, so the source element says which station it is.
+let currentStationKey = audioSource.dataset.station;
 let playAfterSwitch = false;
 
 // Start playback. Browsers block sound until the visitor has interacted with
@@ -101,13 +104,18 @@ wsContainer.addEventListener('htmx:wsAfterMessage', () => {
 
 wsContainer.addEventListener('htmx:wsAfterMessage', event => {
 	audioSource = document.querySelector('#audio-source');
-	if (currentSource != audioSource.src) {
+	const stationKey = audioSource.dataset.station;
+	if (currentSource != audioSource.src || currentStationKey !== stationKey) {
+		// A server-side change (a station removed or the list reordered) only
+		// renumbers the stream; don't stop a radio that was playing.
+		const wasPlaying = !player.paused;
 		currentSource = audioSource.src;
+		currentStationKey = stationKey;
 		stationStarted = false;
 		retriesLeft = RETRIES;
 		clearTimeout(retryTimer);
 		player.load();
-		if (playAfterSwitch) {
+		if (playAfterSwitch || (wasPlaying && autoSkipActive)) {
 			playAfterSwitch = false;
 			startPlayback();
 		}
@@ -384,6 +392,8 @@ const stationDialog = document.querySelector('#station-dialog');
 const stationPicker = document.querySelector('#station-picker');
 const stationFilter = document.querySelector('#station-filter');
 const stationCount = document.querySelector('#station-count');
+const stationMessage = document.querySelector('#station-dialog-msg');
+let stationMessageTimer = 0;
 
 // "(448)", or "(12 of 448)" while the filter hides some.
 function updateStationCount() {
@@ -407,11 +417,126 @@ function currentStationIndex() {
 function applyStationFilter() {
 	const q = stationFilter.value.trim().toLowerCase().replace(/^#/, '');
 	for (const li of stationPicker.children) {
-		const b = li.firstChild;
+		const b = li.querySelector('.station-pick');
 		const name = b.querySelector('.pick-name').textContent.toLowerCase();
 		li.hidden = q !== '' && !name.includes(q) && String(Number(b.dataset.index) + 1) !== q;
 	}
 	updateStationCount();
+}
+
+function setStationMessage(text, bad = false) {
+	stationMessage.textContent = text;
+	stationMessage.className = bad ? 'bad' : '';
+	clearTimeout(stationMessageTimer);
+	if (text) stationMessageTimer = setTimeout(() => {
+		stationMessage.textContent = '';
+		stationMessage.className = '';
+	}, 4000);
+}
+
+// One row: the station button and, beside it, a remove button (not inside it:
+// a button in a button is invalid and the click would select the station).
+function stationRow({index: i, name, proxy, favorite}, count, cur) {
+	const li = document.createElement('li');
+	const b = document.createElement('button');
+	b.type = 'button';
+	b.className = 'station-pick';
+	b.dataset.index = i;
+	const num = document.createElement('span');
+	num.className = 'pick-num';
+	num.textContent = i + 1;
+	b.appendChild(num);
+	const fav = document.createElement('span');
+	fav.className = 'pick-fav';
+	fav.textContent = favorite ? '\u2605' : '';
+	if (favorite) fav.title = 'Favorite';
+	b.appendChild(fav);
+	const label = document.createElement('span');
+	label.className = 'pick-name';
+	label.textContent = name;
+	b.appendChild(label);
+	if (proxy) {
+		const tag = document.createElement('span');
+		tag.className = 'pick-proxy';
+		tag.textContent = 'proxy';
+		tag.title = 'Plays through the proxy';
+		b.appendChild(tag);
+	}
+	if (i === cur) {
+		b.setAttribute('aria-current', 'true');
+	}
+	li.appendChild(b);
+
+	const del = document.createElement('button');
+	del.type = 'button';
+	del.className = 'station-remove';
+	del.textContent = '\u00d7';
+	del.dataset.name = name;
+	del.setAttribute('aria-label', `Remove station ${name}`);
+	if (count <= 1) {
+		del.disabled = true;
+		del.title = 'At least one station is required';
+	} else {
+		del.title = 'Remove this station';
+	}
+	li.appendChild(del);
+	return li;
+}
+
+function renderStationPicker(stations) {
+	const cur = currentStationIndex();
+	stationPicker.replaceChildren(...stations.map(s => stationRow(s, stations.length, cur)));
+}
+
+// Reload the list after a change (a removal) and keep the filter.
+async function refreshStationPicker() {
+	let stations = [];
+	try {
+		stations = await (await fetch('/api/stations')).json();
+	} catch (e) {
+		setStationMessage('Could not load the station list', true);
+		return false;
+	}
+	renderStationPicker(stations);
+	applyStationFilter();
+	// Auto-skip stops after one round of the current list.
+	const names = [];
+	for (const s of stations) names[s.index] = s.name;
+	stationNames = names;
+	return true;
+}
+
+async function removeStation(name, button) {
+	if (!confirm(`Remove station "${name}"?`)) return;
+	const row = button.closest('li');
+	const rowIndex = [...stationPicker.children].indexOf(row);
+	const listScroll = stationPicker.scrollTop;
+	const pageScroll = window.scrollY;
+	button.disabled = true;
+	try {
+		const res = await fetch('/api/stations/remove', {
+			method: 'POST',
+			headers: {'Content-Type': 'application/json'},
+			body: JSON.stringify({name}),
+		});
+		const data = await res.json().catch(() => ({}));
+		if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+		if (await refreshStationPicker()) {
+			setStationMessage(`Removed "${name}"`);
+			// Focus the row that took the removed one's place, without
+			// scrolling the list or the page back to the top. Removing the
+			// focused button first would otherwise drop focus to the body.
+			const rows = [...stationPicker.children];
+			const next = rows.slice(rowIndex).find(li => !li.hidden)
+				|| rows.filter(li => !li.hidden).pop();
+			next?.querySelector('.station-pick')?.focus({preventScroll: true});
+			stationPicker.scrollTop = listScroll;
+			if (window.scrollY !== pageScroll) window.scrollTo(window.scrollX, pageScroll);
+		}
+	} catch (e) {
+		button.disabled = false;
+		setStationMessage(`Could not remove "${name}": ${e.message}`, true);
+	}
 }
 
 async function openStationPicker() {
@@ -423,42 +548,10 @@ async function openStationPicker() {
 		status.innerText = 'Could not load station list';
 		return;
 	}
-	const cur = currentStationIndex();
 	// The list comes favorites first; `index` is the place in the file.
-	stationPicker.replaceChildren(...stations.map(({index: i, name, proxy, favorite}) => {
-		const li = document.createElement('li');
-		const b = document.createElement('button');
-		b.type = 'button';
-		b.className = 'station-pick';
-		b.dataset.index = i;
-		const num = document.createElement('span');
-		num.className = 'pick-num';
-		num.textContent = i + 1;
-		b.appendChild(num);
-		const fav = document.createElement('span');
-		fav.className = 'pick-fav';
-		fav.textContent = favorite ? '\u2605' : '';
-		if (favorite) fav.title = 'Favorite';
-		b.appendChild(fav);
-		const label = document.createElement('span');
-		label.className = 'pick-name';
-		label.textContent = name;
-		b.appendChild(label);
-		if (proxy) {
-			const tag = document.createElement('span');
-			tag.className = 'pick-proxy';
-			tag.textContent = 'proxy';
-			tag.title = 'Plays through the proxy';
-			b.appendChild(tag);
-		}
-		if (i === cur) {
-			b.setAttribute('aria-current', 'true');
-		}
-		li.appendChild(b);
-		return li;
-	}));
 	stationFilter.value = '';
-	updateStationCount();
+	renderStationPicker(stations);
+	applyStationFilter();
 	stationDialog.showModal();
 	const active = stationPicker.querySelector('[aria-current]');
 	if (active) {
@@ -502,6 +595,12 @@ function selectStation(index) {
 }
 
 stationPicker.addEventListener('click', e => {
+	const del = e.target.closest('.station-remove');
+	if (del) {
+		e.stopPropagation();
+		removeStation(del.dataset.name, del);
+		return;
+	}
 	const b = e.target.closest('.station-pick');
 	if (!b) return;
 	selectStation(Number(b.dataset.index));
