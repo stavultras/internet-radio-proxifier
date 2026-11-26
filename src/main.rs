@@ -30,6 +30,7 @@ use stations::Station;
 
 const MASK: &str = "********";
 const TITLE_INTERVAL: Duration = Duration::from_secs(5);
+const BITRATE_ONLY_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 struct Session {
     station: usize,
@@ -56,7 +57,8 @@ struct App {
     bitrates: Mutex<HashMap<String, String>>,
     /// Stream URLs with a title fetch running.
     inflight: Mutex<HashSet<String>>,
-    save_lock: Mutex<()>,
+    bitrate_only_until: Mutex<HashMap<String, Instant>>,
+    save_lock: tokio::sync::Mutex<()>,
     // usize: 32-bit MIPS has no 64-bit atomics.
     next_id: AtomicUsize,
 }
@@ -103,11 +105,12 @@ impl App {
 
     /// The stream element for station `i`. `data-station` is the stream URL:
     /// a removal can leave the number the same while the station changes.
-    fn player_html(i: usize, st: &Station) -> String {
+    fn player_html(i: usize, st: &Station, count: usize) -> String {
         format!(
-            r#"<source id="audio-source" src="{}" data-index="{i}" data-station="{}" type="audio/mpeg">"#,
+            r#"<source id="audio-source" src="{}" data-index="{i}" data-count="{count}" data-station="{}" data-name="{}" type="audio/mpeg">"#,
             esc(&Self::station_url(i)),
-            esc(&st.url)
+            esc(&st.url),
+            esc(&st.name)
         )
     }
 
@@ -167,8 +170,11 @@ const MEASURE_BYTES: usize = 32 * 1024;
 /// The stream's song title and bitrate ("128", "~173" for VBR; empty when
 /// unknown). The bitrate is measured from the audio frames; icy-br is only
 /// used when no frames are recognised.
-async fn stream_title(url: &str, proxy: Option<&Proxy>) -> std::io::Result<(String, String)> {
+async fn stream_title(url: &str, proxy: Option<&Proxy>) -> std::io::Result<(Option<String>, String)> {
     let mut resp = http::get(url, proxy, &[("Icy-MetaData", "1")]).await?;
+    if !(200..300).contains(&resp.status) {
+        return Err(http::err(format!("stream returned {}", resp.status)));
+    }
     let icy = bitrate(resp.header("icy-br"), resp.header("ice-audio-info"));
     let measured = |audio: &[u8]| audio::measure(audio).map(|b| b.label()).unwrap_or_else(|| icy.clone());
     // A stream without ICY metadata has no title, only the bitrate.
@@ -176,9 +182,10 @@ async fn stream_title(url: &str, proxy: Option<&Proxy>) -> std::io::Result<(Stri
         let mut audio = vec![0u8; MEASURE_BYTES];
         let br = match resp.body.read_full(&mut audio).await {
             Ok(()) => measured(&audio),
-            Err(_) => icy.clone(),
+            Err(_) if !icy.is_empty() => icy,
+            Err(e) => return Err(e),
         };
-        return Ok((String::new(), br));
+        return Ok((None, br));
     };
     // The audio before the first metadata block, kept to measure the bitrate.
     let mut audio = vec![0u8; metaint.min(64 * 1024)];
@@ -192,10 +199,10 @@ async fn stream_title(url: &str, proxy: Option<&Proxy>) -> std::io::Result<(Stri
     for part in meta.split(|&b| b == b';') {
         let p = trim_bytes(part);
         if p.len() >= 14 && p.starts_with(b"StreamTitle='") {
-            return Ok((decode_title(&p[13..p.len() - 1]), br));
+            return Ok((Some(decode_title(&p[13..p.len() - 1])), br));
         }
     }
-    Ok((String::new(), br))
+    Ok((Some(String::new()), br))
 }
 
 /// kbps from icy-br ("128", some servers send "128,128") or, failing that,
@@ -258,7 +265,10 @@ async fn refresh_station(app: &App, list: &[Station], k: usize) {
     let title = match timeout(Duration::from_secs(10), stream_title(&st.url, app.proxy_for(st).as_ref())).await {
         Ok(Ok((t, br))) => {
             app.bitrates.lock().unwrap().insert(st.url.clone(), br);
-            let t = stations::clean_title(&t);
+            if t.is_none() {
+                app.bitrate_only_until.lock().unwrap().insert(st.url.clone(), Instant::now() + BITRATE_ONLY_INTERVAL);
+            }
+            let t = stations::clean_title(t.as_deref().unwrap_or_default());
             app.titles.lock().unwrap().insert(st.url.clone(), t.clone());
             t
         }
@@ -271,18 +281,21 @@ async fn refresh_station(app: &App, list: &[Station], k: usize) {
             app.cached_title(&st.url)
         }
     };
-    // The list can change while the fetch runs (a removal or a reorder). Do
-    // not put the old station's name back onto whatever now sits at k.
+    // A single URL fetch serves all listeners, using their current station details.
     let current = app.stations();
-    if current.get(k).map(|s| s.url.as_str()) != Some(st.url.as_str()) {
-        return;
+    for i in app.listened() {
+        if let Some(now) = current.get(i).filter(|now| now.url == st.url) {
+            app.broadcast(i, &app.info_html(i, now, &title));
+        }
     }
-    app.broadcast(k, &app.info_html(k, st, &title));
 }
 
 /// Starts a title fetch for station k unless one for the same stream runs.
 fn refresh_async(app: &Shared, list: &Arc<Vec<Station>>, k: usize) {
     let Some(st) = list.get(k) else { return };
+    if app.bitrate_only_until.lock().unwrap().get(&st.url).is_some_and(|until| *until > Instant::now()) {
+        return;
+    }
     let url = st.url.clone();
     if !app.inflight.lock().unwrap().insert(url.clone()) {
         return;
@@ -327,12 +340,19 @@ fn random_below(n: usize) -> usize {
     (h.finish() % n as u64) as usize
 }
 
-fn handle_ws_message(app: &Shared, id: u64, text: &str) {
+async fn handle_ws_message(app: &Shared, id: u64, text: &str) {
     let list = app.stations();
     let Ok(msg) = serde_json::from_str::<WsMsg>(text) else {
         eprintln!("Unparsable message: {text}");
         return;
     };
+    if msg.action == "favorite" {
+        let index = app.sessions.lock().unwrap().get(&id).map(|s| s.station);
+        if let Some(st) = index.and_then(|i| list.get(i)) {
+            toggle_favorite(app, st).await;
+        }
+        return;
+    }
     let station = {
         let mut sessions = app.sessions.lock().unwrap();
         let Some(s) = sessions.get_mut(&id) else { return };
@@ -353,11 +373,6 @@ fn handle_ws_message(app: &Shared, id: u64, text: &str) {
                 let step = if msg.action == "next" { 1 } else { order.len() - 1 };
                 order[(pos + step) % order.len()]
             }
-            "favorite" => {
-                drop(sessions);
-                toggle_favorite(app, cur);
-                return;
-            }
             "select" => {
                 if msg.index < 0 || msg.index as usize >= list.len() {
                     return;
@@ -376,38 +391,41 @@ fn handle_ws_message(app: &Shared, id: u64, text: &str) {
     if let Some(info) = app.station_info(&list, station) {
         app.send(id, info);
     }
-    app.send(id, App::player_html(station, &list[station]));
+    app.send(id, App::player_html(station, &list[station], list.len()));
     refresh_async(app, &list, station);
 }
 
 /// Writes `list` with the current options. The settings page password is
 /// re-read from the file: it can only be set by editing the file.
-fn save_station_list(app: &App, list: Vec<Station>) -> Result<stations::Settings, String> {
-    let password = stations::load(&app.stations_file)
-        .map_err(|e| format!("cannot read {}: {e}", app.stations_file))?
-        .password;
+async fn save_station_list(app: &App, list: Vec<Station>) -> Result<stations::Settings, String> {
     let settings = stations::Settings {
         stations: list,
         proxy: app.proxy_raw(),
-        password,
+        password: String::new(),
         autoplay: app.autoplay.load(Ordering::Relaxed),
         random_start: app.random_start.load(Ordering::Relaxed),
         random: app.random.load(Ordering::Relaxed),
         retries: app.retries.load(Ordering::Relaxed) as u32,
     };
-    stations::save(&app.stations_file, &settings)
-        .map_err(|e| format!("could not save {}: {e}", app.stations_file))?;
-    Ok(settings)
+    persist_settings(app.stations_file.clone(), settings).await
 }
 
-/// Stars or unstars station `i` from the player: saves the file and shows the
+async fn persist_settings(path: String, mut settings: stations::Settings) -> Result<stations::Settings, String> {
+    tokio::task::spawn_blocking(move || {
+        settings.password = stations::load_password(&path).map_err(|e| format!("cannot read {path}: {e}"))?;
+        stations::save(&path, &settings).map_err(|e| format!("could not save {path}: {e}"))?;
+        Ok(settings)
+    }).await.map_err(|e| format!("settings worker failed: {e}"))?
+}
+
+/// Stars or unstars the selected station from the player: saves the file and shows the
 /// new star to everyone listening to it.
-fn toggle_favorite(app: &Shared, i: usize) {
-    let _guard = app.save_lock.lock().unwrap();
+async fn toggle_favorite(app: &Shared, selected: &Station) {
+    let _guard = app.save_lock.lock().await;
     let mut list = (*app.stations()).clone();
-    let Some(st) = list.get_mut(i) else { return };
+    let Some((i, st)) = list.iter_mut().enumerate().find(|(_, st)| st.name == selected.name && st.url == selected.url) else { return };
     st.favorite = !st.favorite;
-    let settings = match save_station_list(app, list) {
+    let settings = match save_station_list(app, list).await {
         Ok(s) => s,
         Err(e) => return eprintln!("Saving favorite failed: {e}"),
     };
@@ -421,14 +439,19 @@ fn toggle_favorite(app: &Shared, i: usize) {
 /// Removes the station called `name` from the player's list and saves the
 /// file. Listeners on it move to the next station that is left; the others
 /// keep their stream through `remap_sessions`.
-fn remove_station(app: &Shared, name: &str) -> Result<usize, String> {
-    let _guard = app.save_lock.lock().unwrap();
+async fn remove_station(app: &Shared, name: &str) -> Result<usize, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("station name is missing".into());
+    }
+    let _guard = app.save_lock.lock().await;
     let old = app.stations();
     let list = stations::remove((*old).clone(), name)?;
-    let settings = save_station_list(app, list)?;
+    let settings = save_station_list(app, list).await?;
     let new = Arc::new(settings.stations);
     *app.stations.write().unwrap() = new.clone();
-    remap_sessions(app, &old, &new);
+    let had_proxy = app.proxy.read().unwrap().1.is_some();
+    remap_sessions(app, &old, &new, had_proxy);
     eprintln!("Removed station {name:?} ({} stations left)", new.len());
     Ok(new.len())
 }
@@ -449,7 +472,7 @@ async fn ws_client(app: Shared, mut sock: WebSocket) {
             m = sock.recv() => match m {
                 Some(Ok(Message::Text(t))) => {
                     last_seen = Instant::now();
-                    handle_ws_message(&app, id, t.as_str());
+                    handle_ws_message(&app, id, t.as_str()).await;
                 }
                 Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
                 Some(Ok(_)) => last_seen = Instant::now(),
@@ -526,11 +549,8 @@ async fn index(State(app): State<Shared>) -> Html<String> {
     };
     let attrs = format!("{autoplay} data-retries=\"{}\"", app.retries.load(Ordering::Relaxed));
     let list = app.stations();
-    let station = list.first().map(|s| s.url.as_str()).unwrap_or("");
-    Html(INDEX
-        .replace("{{url}}", &esc(&App::station_url(0)))
-        .replace("{{station}}", &esc(station))
-        .replace("{{autoplay}}", &attrs))
+    let source = list.first().map(|st| App::player_html(0, st, list.len())).unwrap_or_default();
+    Html(INDEX.replace("{{autoplay}}", &attrs).replace("{{source}}", &source))
 }
 
 #[derive(Serialize)]
@@ -565,13 +585,11 @@ async fn api_remove_station(State(app): State<Shared>, body: Bytes) -> Response 
     let Ok(req) = serde_json::from_slice::<RemoveReq>(&body) else {
         return json_error(StatusCode::BAD_REQUEST, "invalid JSON");
     };
-    let name = req.name.trim();
-    if name.is_empty() {
-        return json_error(StatusCode::BAD_REQUEST, "station name is missing");
-    }
-    match remove_station(&app, name) {
-        Ok(count) => Json(serde_json::json!({ "ok": true, "count": count })).into_response(),
-        Err(e) => json_error(StatusCode::BAD_REQUEST, e),
+    // Finish publishing a durable change even if the HTTP client disconnects.
+    match tokio::spawn(async move { remove_station(&app, &req.name).await }).await {
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Ok(Ok(count)) => Json(serde_json::json!({ "ok": true, "count": count })).into_response(),
+        Ok(Err(e)) => json_error(StatusCode::BAD_REQUEST, e),
     }
 }
 
@@ -726,8 +744,8 @@ fn json_error(code: StatusCode, msg: impl Into<String>) -> Response {
 fn check_auth(app: &App, headers: &HeaderMap) -> Result<(), Response> {
     // Read from the file every time: it is changed only by editing the file,
     // and that takes effect without a restart.
-    let password = match stations::load(&app.stations_file) {
-        Ok(s) => s.password,
+    let password = match stations::load_password(&app.stations_file) {
+        Ok(password) => password,
         Err(e) => {
             eprintln!("Cannot read {}: {e}", app.stations_file);
             return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, "cannot read the settings file"));
@@ -765,8 +783,15 @@ async fn settings_put(State(app): State<Shared>, headers: HeaderMap, body: Bytes
     let Ok(input) = serde_json::from_slice::<ConfigJson>(&body) else {
         return json_error(StatusCode::BAD_REQUEST, "invalid JSON");
     };
-    let list: Vec<Station> = input
-        .stations
+    // The transaction owns the lock through publication, including after a disconnect.
+    match tokio::spawn(apply_settings(app, input)).await {
+        Ok(response) => response,
+        Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+async fn apply_settings(app: Shared, input: ConfigJson) -> Response {
+    let list: Vec<Station> = input.stations
         .into_iter()
         .map(|s| Station { name: s.name, url: s.url, use_proxy: s.use_proxy, favorite: s.favorite })
         .collect();
@@ -774,7 +799,7 @@ async fn settings_put(State(app): State<Shared>, headers: HeaderMap, body: Bytes
         Ok(l) => l,
         Err(e) => return json_error(StatusCode::BAD_REQUEST, e),
     };
-    let _guard = app.save_lock.lock().unwrap();
+    let _guard = app.save_lock.lock().await;
     let raw = unmask_proxy(&input.proxy, &app.proxy_raw());
     let parsed = if raw.is_empty() {
         None
@@ -784,33 +809,28 @@ async fn settings_put(State(app): State<Shared>, headers: HeaderMap, body: Bytes
             Err(e) => return json_error(StatusCode::BAD_REQUEST, e),
         }
     };
-    // The password is set only by editing the file; keep what is there now.
-    let password = match stations::load(&app.stations_file) {
-        Ok(s) => s.password,
-        Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, format!("cannot read {}: {e}", app.stations_file)),
-    };
-    let settings = stations::Settings { stations: list, proxy: raw, password, autoplay: input.autoplay,
+    let settings = stations::Settings { stations: list, proxy: raw, password: String::new(), autoplay: input.autoplay,
         random_start: input.random_start,
         random: input.random,
         retries: input.retries.min(stations::MAX_RETRIES),
     };
-    if let Err(e) = stations::save(&app.stations_file, &settings) {
-        eprintln!("Saving settings failed: {e}");
-        return json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("could not save {}: {e}", app.stations_file),
-        );
-    }
+    let settings = match persist_settings(app.stations_file.clone(), settings).await {
+        Ok(settings) => settings,
+        Err(e) => {
+            eprintln!("Saving settings failed: {e}");
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, e);
+        }
+    };
     let has_proxy = parsed.is_some();
     let stations::Settings { stations: list, proxy: raw, autoplay, random_start, random, retries, .. } = settings;
     app.retries.store(retries as usize, Ordering::Relaxed);
     app.autoplay.store(autoplay, Ordering::Relaxed);
     app.random_start.store(random_start, Ordering::Relaxed);
     app.random.store(random, Ordering::Relaxed);
-    *app.proxy.write().unwrap() = (raw, parsed);
+    let had_proxy = std::mem::replace(&mut *app.proxy.write().unwrap(), (raw, parsed)).1.is_some();
     let new = Arc::new(list);
     let old = std::mem::replace(&mut *app.stations.write().unwrap(), new.clone());
-    remap_sessions(&app, &old, &new);
+    remap_sessions(&app, &old, &new, had_proxy);
     eprintln!("Settings saved ({} stations, proxy {has_proxy})", new.len());
     Json(config_json(&app)).into_response()
 }
@@ -820,7 +840,7 @@ async fn settings_put(State(app): State<Shared>, headers: HeaderMap, body: Bytes
 /// last station when it was the last one.
 fn next_station(old: &[Station], cur: &[Station], index: &HashMap<&str, usize>, idx: usize) -> usize {
     old.iter()
-        .skip(idx + 1)
+        .skip(idx.saturating_add(1))
         .find_map(|st| index.get(st.url.as_str()).copied())
         .unwrap_or_else(|| cur.len().saturating_sub(1))
 }
@@ -828,20 +848,31 @@ fn next_station(old: &[Station], cur: &[Station], index: &HashMap<&str, usize>, 
 /// Keeps every listener on the same stream after the list was reordered.
 /// Listeners whose station was removed are moved to the next station in the
 /// old list that still exists (the last one when it was the last station).
-fn remap_sessions(app: &App, old: &[Station], cur: &[Station]) {
+fn remap_sessions(app: &App, old: &[Station], cur: &[Station], had_proxy: bool) {
+    let has_proxy = app.proxy.read().unwrap().1.is_some();
     let mut index: HashMap<&str, usize> = HashMap::new();
     for (i, s) in cur.iter().enumerate() {
         index.entry(&s.url).or_insert(i);
     }
     for s in app.sessions.lock().unwrap().values_mut() {
         let idx = s.station;
-        let found = old.get(idx).and_then(|st| index.get(st.url.as_str()).copied());
-        let new_idx = found.unwrap_or_else(|| next_station(old, cur, &index, idx));
+        let previous = old.get(idx);
+        let new_idx = match (previous, cur.get(idx)) {
+            // Distinct station names can share a stream URL.
+            (Some(a), Some(b)) if a.name == b.name && a.url == b.url => idx,
+            _ => previous.and_then(|st| index.get(st.url.as_str()).copied())
+                .unwrap_or_else(|| next_station(old, cur, &index, idx)),
+        };
         s.station = new_idx;
-        // The relayed URL contains the index, so the player needs the new one.
-        if found.is_none() || new_idx != idx {
-            let _ = s.tx.send(app.info_html(new_idx, &cur[new_idx], &app.cached_title(&cur[new_idx].url)));
-            let _ = s.tx.send(App::player_html(new_idx, &cur[new_idx]));
+        let station = &cur[new_idx];
+        let station_changed = idx != new_idx || previous.is_none_or(|st| st.name != station.name || st.url != station.url);
+        let tags_changed = previous.is_some_and(|st| st.favorite != station.favorite
+            || (st.use_proxy && had_proxy) != (station.use_proxy && has_proxy));
+        if station_changed || tags_changed {
+            let _ = s.tx.send(app.info_html(new_idx, station, &app.cached_title(&station.url)));
+        }
+        if station_changed || old.len() != cur.len() {
+            let _ = s.tx.send(App::player_html(new_idx, station, cur.len()));
         }
     }
 }
@@ -1073,7 +1104,8 @@ fn main() {
         titles: Mutex::new(HashMap::new()),
         bitrates: Mutex::new(HashMap::new()),
         inflight: Mutex::new(HashSet::new()),
-        save_lock: Mutex::new(()),
+        bitrate_only_until: Mutex::new(HashMap::new()),
+        save_lock: tokio::sync::Mutex::new(()),
         next_id: AtomicUsize::new(1),
     });
 
@@ -1149,10 +1181,12 @@ mod tests {
 
     #[test]
     fn player_source_identifies_station() {
-        let st = Station { name: "A".into(), url: "http://x/a?b=1&c=2".into(), use_proxy: false, favorite: false };
-        let html = App::player_html(2, &st);
+        let st = Station { name: "A & B".into(), url: "http://x/a?b=1&c=2".into(), use_proxy: false, favorite: false };
+        let html = App::player_html(2, &st, 3);
         assert!(html.contains(r#"src="/station/3""#));
         assert!(html.contains(r#"data-index="2""#));
+        assert!(html.contains(r#"data-name="A &amp; B""#));
+        assert!(html.contains(r#"data-count="3""#));
         assert!(html.contains(r#"data-station="http://x/a?b=1&amp;c=2""#));
     }
 

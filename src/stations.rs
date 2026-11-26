@@ -14,7 +14,7 @@
 //!   favorite  = true          (listed and played first)
 
 use std::collections::HashSet;
-use std::io::{self, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -77,6 +77,10 @@ impl Default for Settings {
     }
 }
 
+fn section_name(line: &str) -> Option<&str> {
+    line.strip_prefix('[').and_then(|l| l.rfind(']').map(|i| l[..i].trim()))
+}
+
 pub fn parse(text: &str) -> Settings {
     let mut list: Vec<Station> = Vec::new();
     let mut proxy = String::new();
@@ -90,7 +94,7 @@ pub fn parse(text: &str) -> Settings {
         if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
             continue;
         }
-        if let Some(name) = line.strip_prefix('[').and_then(|l| l.rfind(']').map(|i| l[..i].trim())) {
+        if let Some(name) = section_name(line) {
             list.push(Station { name: name.to_string(), url: String::new(), use_proxy: false, favorite: false });
             continue;
         }
@@ -119,6 +123,26 @@ pub fn parse(text: &str) -> Settings {
 
 pub fn load(path: &str) -> io::Result<Settings> {
     Ok(parse(&std::fs::read_to_string(path)?))
+}
+
+pub fn load_password(path: &str) -> io::Result<String> {
+    read_password(BufReader::new(std::fs::File::open(path)?))
+}
+
+fn read_password(mut reader: impl BufRead) -> io::Result<String> {
+    let mut password = String::new();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 || section_name(line.trim()).is_some() {
+            return Ok(password);
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            if key.trim() == "password" {
+                password = ini_value(value);
+            }
+        }
+    }
 }
 
 /// Normalises and checks a station list from the settings page.
@@ -270,6 +294,14 @@ pub fn clean_title(t: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn password_reader_stops_at_first_station() {
+        let ini = " password = first\n[unfinished\n password = `a#;b`\n[Station] ; comment\npassword = ignored\n";
+        let mut reader = io::Cursor::new(ini);
+        assert_eq!(read_password(&mut reader).unwrap(), parse(ini).password);
+        assert_eq!(&ini[reader.position() as usize..], "password = ignored\n");
+    }
 
     const SAMPLE: &str = "proxy_url = socks5h://u:p@192.168.1.10:1080\n\n[ROCK FM]\nurl = http://a/rock-128.mp3\n\n\
         [0N Classic Rock]\nurl       = https://b/x.mp3\nuse_proxy = true\n\n\

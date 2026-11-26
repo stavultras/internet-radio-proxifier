@@ -57,7 +57,7 @@ need it).
 
 ```sh
 cargo build --release                  # native release binary
-cargo test --locked                    # 19 unit tests, all offline
+cargo test --locked                    # 20 unit tests, all offline
 cargo run -- -a 127.0.0.1 -p 19876 -c /tmp/radio-settings.ini
 curl -sS http://127.0.0.1:19876/ | head
 ./build.sh                             # all release packages into dist/
@@ -116,7 +116,7 @@ file path, websocket sessions, song-title and bitrate caches (both keyed by
 
 | Route | Purpose |
 | --- | --- |
-| `GET /` | player page (`{{url}}`/`{{autoplay}}` placeholders filled in) |
+| `GET /` | player page (`{{source}}`/`{{autoplay}}` placeholders filled in) |
 | `GET /ws` | player websocket (htmx WS extension) |
 | `GET /api/stations` | station picker data, **in play order** (favorites first) |
 | `POST /api/stations/remove` | remove one station by name from the player picker; saves and remaps listeners |
@@ -184,8 +184,12 @@ waited ~43 ms for ACKs; with it the name arrives in ~1 ms. Keep both.
   each name at its own `index`. A bug here once made a star look lost after
   reload — don't regress it.
 - `remap_sessions()` matches listeners to the new list **by stream URL**
-  after a save/reorder and re-sends info + source when the index changed;
-  listeners whose station was removed move to the next station that is
+  after a save/reorder. It re-sends info when the station, its favorite or
+  its effective proxy tag changed, and the source when the station changed
+  or the list length changed (the count feeds auto-skip); a listener whose
+  station did not change gets nothing for a plain options save. A listener
+  stays on its own station even when another station shares its URL.
+  Listeners whose station was removed move to the next station that is
   still there, or to the last one when the removed station was last.
 
 ### Settings file (`settings.ini`)
@@ -207,13 +211,17 @@ waited ~43 ms for ACKs; with it the name arrives in ~1 ms. Keep both.
   `render()` always writes the four option keys; `password`/`proxy_url` only
   when non-empty; values are quoted by `ini_quote()` as needed.
 - **The settings-page password can only be set by editing the file.** Never
-  add a UI field for it, never render it, never overwrite it on save (both
-  `settings_put` and `toggle_favorite` re-read it from disk). Username is
-  `admin`; `check_auth` reads the file on **every request**, so a hand edit
-  takes effect without a restart. An empty password means the page is open.
+  add a UI field for it, never render it, never overwrite it on save (every
+  save re-reads it from disk). Username is `admin`; `check_auth` reads the
+  file on **every request**, stopping at the first `[station]` line
+  (`load_password`), so a hand edit takes effect without a restart and auth
+  does not parse the station list. An empty password means the page is open.
 - Saving is atomic (temp file `.settings-<pid>-<nanos>.ini` in the same
   directory, `create_new`, `sync_all`, rename) and mode `0600` on Unix
-  because the file holds proxy passwords. Keep both.
+  because the file holds proxy passwords. Keep both. Saves run on the
+  blocking pool under an async save lock, and the settings save and station
+  removal run in their own task: a disconnected client must not cut a
+  durable write short.
 - The proxy password is sent to the browser only as `********`
   (`mask_proxy`); `unmask_proxy` restores the saved value when the mask comes
   back. Proxy parse/save errors must never echo the proxy URL. Tests cover
@@ -256,6 +264,10 @@ dependencies.
 - `title_loop` fetches every 5 s, **only for stations someone is listening
   to** (`listened()`), deduplicated per stream URL (`inflight`). Fetching all
   stations once caused a ~5 s name delay; never reintroduce it.
+- Streams **without ICY metadata** have no title, so after one successful
+  look they are skipped for 5 minutes (`BITRATE_ONLY_INTERVAL`); their
+  bitrate cannot change. A stream with metadata but an empty `StreamTitle`
+  keeps being polled, because stations often start sending titles late.
 - Each fetch has a 10 s timeout; on error/timeout the **last cached title is
   kept**. Caches are keyed by stream URL and survive station switches, so
   returning to a station shows its last title immediately.
@@ -290,10 +302,12 @@ dependencies.
   the new `<source>`; the name shows immediately, not after the first audio
   buffer.
 - **The source says which station it is.** `#audio-source` carries
-  `data-station` (the stream URL) as well as `src` and `data-index`. A
-  removal can keep the number and the `/station/N` URL while the station
-  changes, so the player must compare `data-station` too; otherwise the
-  removed stream keeps playing under the next station's name.
+  `data-station` (the stream URL), `data-index`, `data-name` and
+  `data-count` as well as `src`. A removal can keep the number and the
+  `/station/N` URL while the station changes, so the player must compare
+  `data-station` too; otherwise the removed stream keeps playing under the
+  next station's name. `data-name` is what the browser saves as the last
+  station, and `data-count` is what limits auto-skip to one round.
 - **No layout jump.** `#station-name` and `#station-title` reserve a line
   (`min-height: 1.3em`).
 - **Status line is real state:** connecting, playing, buffering, retrying,
@@ -314,9 +328,9 @@ dependencies.
   a random pick can return to a previously failed station; that is intended).
 - **Auto-skip:** a 1 s watchdog skips a station stalled for 12 s
   (`SKIP_STALL_MS`), errored or ended. It gives up after **one full round**
-  of failing stations (`stationNames.length`) with "No station can be played
-  right now…". Manual Next/Previous and picker selects reset the counter;
-  pausing disables auto-skip.
+  of failing stations (`#audio-source`'s `data-count`, falling back to 1)
+  with "No station can be played right now…". Manual Next/Previous and
+  picker selects reset the counter; pausing disables auto-skip.
 - **Picker:** title shows the count — "(448)", or "(12 of 448)" while
   filtering. The filter matches names or an **exact station number** ("12"
   finds #12, not #112; a leading `#` is stripped); Enter plays the exact
@@ -331,8 +345,13 @@ dependencies.
   stations. `random_start` (server-side) only applies with autoplay, on the
   first connect.
 - **Persistence:** localStorage keys `internet-radio-proxifier-volume` and
-  `internet-radio-proxifier-last-station` (stored **by name** on every source
-  change, restored on every `wsOpen`). Volume is re-applied on
+  `internet-radio-proxifier-last-station`. The station is stored **by name**
+  from the new source's `data-name` whenever the server replaces the source
+  element, and restored on every `wsOpen`: the server always starts a
+  session at station 0, so the client selects the saved station by looking
+  its name up in `/api/stations`. A name that no longer exists falls back to
+  the first station and is remembered as such; a temporary list failure
+  keeps the old name for the next reconnect. Volume is re-applied on
   loadstart/loadedmetadata/playing (upstream issue #3: it reset on station
   change).
 - **PWA / Media Session:** `sw.js` is a deliberate no-op pass-through — it
@@ -499,9 +518,9 @@ When the user asks for local builds, they want **only** the Filogic 820
 - `internet-radio-proxifier_<V>-r1_aarch64_cortex-a53.ipk`
 - `internet-radio-proxifier-<V>.tar.gz` (`git archive --prefix=…/ <commit>`)
 
-Deliver them in the maintainer's local delivery folder (historically
-`~/radio/internet-radio-proxifier-<V>/`, tarball next to it) and always
-include the tarball. Build the aarch64 binary with:
+Put all three in the repo's `dist/` folder (git-ignored) — there is no
+separate `~/radio` delivery folder any more — and always include the
+tarball. Build the aarch64 binary with:
 
 ```sh
 export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc \
@@ -567,7 +586,7 @@ IPKG_BUILD=$(ls ~/.cache/openwrt-toolchains/ipkg-build-* | head -1) \
 
 Before reporting work done:
 
-1. `cargo test --locked` passes (19 tests, offline).
+1. `cargo test --locked` passes (20 tests, offline).
 2. `cargo build --release --locked` passes.
 3. Start the binary with a **temporary** settings file on a non-default
    port (record `$!`, kill that PID) and check:

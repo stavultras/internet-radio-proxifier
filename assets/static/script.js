@@ -103,7 +103,9 @@ wsContainer.addEventListener('htmx:wsAfterMessage', () => {
 });
 
 wsContainer.addEventListener('htmx:wsAfterMessage', event => {
-	audioSource = document.querySelector('#audio-source');
+	const source = document.querySelector('#audio-source');
+	if (source !== audioSource && !firstConnect) saveStation(source.dataset.name);
+	audioSource = source;
 	const stationKey = audioSource.dataset.station;
 	if (currentSource != audioSource.src || currentStationKey !== stationKey) {
 		// A server-side change (a station removed or the list reordered) only
@@ -338,6 +340,11 @@ function retryStation(reason) {
 	}, delay);
 }
 
+function sourceStationCount() {
+	const count = Number(document.querySelector('#audio-source')?.dataset.count);
+	return Number.isSafeInteger(count) && count > 0 ? count : 1;
+}
+
 function skipStation(reason) {
 	if (!autoSkipActive) return;
 	if (stationStarted && retriesLeft > 0) {
@@ -345,7 +352,7 @@ function skipStation(reason) {
 		return;
 	}
 	retrying = false;
-	if (skipsInARow >= Math.max(stationNames.length, 1)) {
+	if (skipsInARow >= sourceStationCount()) {
 		gaveUp = 'No station can be played right now. Is the internet connection working?';
 		autoSkipActive = false;
 		failedStation = '';
@@ -499,10 +506,6 @@ async function refreshStationPicker() {
 	}
 	renderStationPicker(stations);
 	applyStationFilter();
-	// Auto-skip stops after one round of the current list.
-	const names = [];
-	for (const s of stations) names[s.index] = s.name;
-	stationNames = names;
 	return true;
 }
 
@@ -641,17 +644,13 @@ if (!AUTOPLAY) setStatus('Press play to start');
 
 // Names by place in the settings file (the index the server uses). The API
 // lists favorites first, so place each name at its own `index`.
-let stationNames = [];
 async function loadStationNames() {
 	try {
 		const names = [];
 		for (const s of await (await fetch('/api/stations')).json()) names[s.index] = s.name;
-		stationNames = names;
-	} catch (e) {}
-	return stationNames;
+		return names;
+	} catch (e) { return null; }
 }
-// The station count limits auto-skip to one round.
-loadStationNames();
 
 function saveStation(name) {
 	if (!name) return;
@@ -659,35 +658,25 @@ function saveStation(name) {
 	try { localStorage.setItem(LAST_STATION_KEY, name); } catch (e) {}
 }
 
-// The server sends the station index with every new source (next, previous,
-// picker, auto-skip), so the choice is saved right away.
-let lastSavedIndex = null;
-wsContainer.addEventListener('htmx:wsAfterMessage', async () => {
-	if (firstConnect) return; // still restoring; ignore the default station
-	const idx = document.querySelector('#audio-source')?.dataset.index;
-	if (idx === undefined || idx === lastSavedIndex) return;
-	lastSavedIndex = idx;
-	await loadStationNames(); // fresh: the list may have been reordered
-	saveStation(stationNames[idx]);
-});
-
 // On every (re)connect the server starts this session at station 0, so ask
 // for the wanted one again. On reconnect the same source is kept playing.
 document.body.addEventListener('htmx:wsOpen', async () => {
 	const restoring = firstConnect;
-	let index = -1;
+	let index = 0;
 	if (restoring && RANDOM_START) {
-		const names = await loadStationNames();
-		index = Math.floor(Math.random() * names.length);
+		const count = sourceStationCount();
+		index = Math.floor(Math.random() * count);
 	} else if (wantedStation) {
-		index = (await loadStationNames()).indexOf(wantedStation);
+		const names = await loadStationNames();
+		// A temporary list failure should preserve the saved name for reconnect.
+		index = names ? Math.max(names.indexOf(wantedStation), 0) : -1;
 	}
-	if (index > 0) {
+	if (index > 0 || (!restoring && index === 0)) {
 		if (restoring) playAfterSwitch = AUTOPLAY;
 		socket.send(JSON.stringify({action: 'select', index}), elt);
-	} else if (restoring && (wantedStation || RANDOM_START) && AUTOPLAY) {
-		// Station 0 was picked, or the saved one no longer exists: play the default.
-		startPlayback();
+	} else if (restoring) {
+		if ((RANDOM_START || wantedStation) && AUTOPLAY) startPlayback();
+		if (index === 0) saveStation(document.querySelector('#audio-source').dataset.name);
 	}
 	firstConnect = false;
 });
