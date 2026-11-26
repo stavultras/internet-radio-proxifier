@@ -617,7 +617,7 @@ Before reporting work done:
 
 ## Environment and safety
 
-- Devices: the main test router is `192.168.200.254` (TR3000, Filogic 820,
+- Devices: the main test router is `192.168.200.254` (Cudy WR3000P, Filogic 820,
   aarch64_cortex-a53, 512 MB RAM, 128 MB NAND) — install there when asked.
   The x86_64 OpenWrt box `192.168.200.252` is the first stop for tests
   (the maintainer asked for new builds there before `.254`). An offline test
