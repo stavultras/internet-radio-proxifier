@@ -11,7 +11,7 @@ mod stations;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
 use axum::body::{Body, Bytes};
@@ -22,7 +22,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::{Instant, MissedTickBehavior, interval, timeout, timeout_at};
 
 use http::Proxy;
@@ -30,17 +30,59 @@ use stations::Station;
 
 const MASK: &str = "********";
 const TITLE_INTERVAL: Duration = Duration::from_secs(5);
+const HIDDEN_TITLE_INTERVAL: Duration = Duration::from_secs(30);
 const BITRATE_ONLY_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const WS_QUEUE: usize = 8;
+const WS_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct Session {
     station: usize,
-    tx: mpsc::UnboundedSender<String>,
+    playing: bool,
+    hidden: bool,
+    tx: mpsc::Sender<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct RelayKey {
+    url: String,
+    proxy: Option<Arc<Proxy>>,
+}
+
+impl RelayKey {
+    fn new(st: &Station, proxy: Option<Arc<Proxy>>) -> Self {
+        Self { url: st.url.clone(), proxy }
+    }
+}
+
+#[derive(Clone)]
+struct RelayError {
+    kind: std::io::ErrorKind,
+    message: Arc<str>,
+}
+
+impl RelayError {
+    fn new(e: std::io::Error) -> Self {
+        Self { kind: e.kind(), message: Arc::from(e.to_string()) }
+    }
+
+    fn to_io(&self) -> std::io::Error {
+        std::io::Error::new(self.kind, self.message.to_string())
+    }
+}
+
+type RelayResult = Result<Bytes, RelayError>;
+
+struct Relay {
+    content_type: String,
+    writable: tokio::sync::Notify,
+    subscribers: Mutex<HashMap<usize, mpsc::Sender<RelayResult>>>,
+    notify: tokio::sync::Notify,
 }
 
 struct App {
     stations: RwLock<Arc<Vec<Station>>>,
     /// Raw proxy URL as saved, and its parsed form.
-    proxy: RwLock<(String, Option<Proxy>)>,
+    proxy: RwLock<(String, Option<Arc<Proxy>>)>,
     /// Start playing as soon as the player page opens.
     autoplay: std::sync::atomic::AtomicBool,
     /// With autoplay: start with a random station.
@@ -51,10 +93,13 @@ struct App {
     retries: AtomicUsize,
     stations_file: String,
     sessions: Mutex<HashMap<u64, Session>>,
+    /// Live upstreams shared by everyone playing the same stream and proxy.
+    relays: Mutex<HashMap<RelayKey, Arc<Relay>>>,
+    opening: Mutex<HashMap<RelayKey, broadcast::Sender<OpenResult>>>,
     /// Last known song title per stream URL.
-    titles: Mutex<HashMap<String, String>>,
+    titles: Mutex<HashMap<String, Arc<str>>>,
     /// Last known bitrate ("128") per stream URL, from icy-br.
-    bitrates: Mutex<HashMap<String, String>>,
+    bitrates: Mutex<HashMap<String, Arc<str>>>,
     /// Stream URLs with a title fetch running.
     inflight: Mutex<HashSet<String>>,
     bitrate_only_until: Mutex<HashMap<String, Instant>>,
@@ -89,7 +134,7 @@ impl App {
         self.proxy.read().unwrap().0.clone()
     }
 
-    fn proxy_for(&self, st: &Station) -> Option<Proxy> {
+    fn proxy_for(&self, st: &Station) -> Option<Arc<Proxy>> {
         if st.use_proxy { self.proxy.read().unwrap().1.clone() } else { None }
     }
 
@@ -99,7 +144,7 @@ impl App {
         format!("/station/{}", i + 1)
     }
 
-    fn cached_title(&self, url: &str) -> String {
+    fn cached_title(&self, url: &str) -> Arc<str> {
         self.titles.lock().unwrap().get(url).cloned().unwrap_or_default()
     }
 
@@ -143,21 +188,31 @@ impl App {
     }
 
     fn send(&self, id: u64, html: String) {
-        if let Some(s) = self.sessions.lock().unwrap().get(&id) {
-            let _ = s.tx.send(html);
+        let mut sessions = self.sessions.lock().unwrap();
+        let failed = sessions.get(&id).is_some_and(|s| s.tx.try_send(html).is_err());
+        if failed {
+            sessions.remove(&id);
         }
     }
 
     fn broadcast(&self, station: usize, html: &str) {
-        for s in self.sessions.lock().unwrap().values() {
-            if s.station == station {
-                let _ = s.tx.send(html.to_string());
-            }
-        }
+        self.sessions.lock().unwrap().retain(|_, s| {
+            s.station != station || s.tx.try_send(html.to_string()).is_ok()
+        });
     }
 
-    /// Stations that connected listeners are on.
-    fn listened(&self) -> HashSet<usize> {
+    /// Stations that actively playing clients are on, and whether every one
+    /// of those clients is in a hidden tab.
+    fn listened(&self) -> HashMap<usize, bool> {
+        let mut stations = HashMap::new();
+        for s in self.sessions.lock().unwrap().values().filter(|s| s.playing) {
+            stations.entry(s.station).and_modify(|all_hidden| *all_hidden &= s.hidden).or_insert(s.hidden);
+        }
+        stations
+    }
+
+    /// Stations with connected player pages, including paused ones.
+    fn connected(&self) -> HashSet<usize> {
         self.sessions.lock().unwrap().values().map(|s| s.station).collect()
     }
 }
@@ -167,10 +222,12 @@ impl App {
 /// Audio read to measure the bitrate of a stream without ICY metadata.
 const MEASURE_BYTES: usize = 32 * 1024;
 
+enum StreamTitle { NoMetadata, Unchanged, Title(String) }
+
 /// The stream's song title and bitrate ("128", "~173" for VBR; empty when
 /// unknown). The bitrate is measured from the audio frames; icy-br is only
 /// used when no frames are recognised.
-async fn stream_title(url: &str, proxy: Option<&Proxy>) -> std::io::Result<(Option<String>, String)> {
+async fn stream_title(url: &str, proxy: Option<&Proxy>) -> std::io::Result<(StreamTitle, String)> {
     let mut resp = http::get(url, proxy, &[("Icy-MetaData", "1")]).await?;
     if !(200..300).contains(&resp.status) {
         return Err(http::err(format!("stream returned {}", resp.status)));
@@ -185,7 +242,7 @@ async fn stream_title(url: &str, proxy: Option<&Proxy>) -> std::io::Result<(Opti
             Err(_) if !icy.is_empty() => icy,
             Err(e) => return Err(e),
         };
-        return Ok((None, br));
+        return Ok((StreamTitle::NoMetadata, br));
     };
     // The audio before the first metadata block, kept to measure the bitrate.
     let mut audio = vec![0u8; metaint.min(64 * 1024)];
@@ -196,13 +253,7 @@ async fn stream_title(url: &str, proxy: Option<&Proxy>) -> std::io::Result<(Opti
     resp.body.read_full(&mut len).await?;
     let mut meta = vec![0u8; len[0] as usize * 16];
     resp.body.read_full(&mut meta).await?;
-    for part in meta.split(|&b| b == b';') {
-        let p = trim_bytes(part);
-        if p.len() >= 14 && p.starts_with(b"StreamTitle='") {
-            return Ok((Some(decode_title(&p[13..p.len() - 1])), br));
-        }
-    }
-    Ok((Some(String::new()), br))
+    Ok((icy_title(&meta).map_or(StreamTitle::Unchanged, StreamTitle::Title), br))
 }
 
 /// kbps from icy-br ("128", some servers send "128,128") or, failing that,
@@ -259,40 +310,82 @@ fn trim_bytes(mut b: &[u8]) -> &[u8] {
     b
 }
 
+fn icy_title(meta: &[u8]) -> Option<String> {
+    for part in meta.split(|&b| b == b';') {
+        let p = trim_bytes(part);
+        if p.len() >= 14 && p.starts_with(b"StreamTitle='") {
+            return Some(decode_title(&p[13..p.len() - 1]));
+        }
+    }
+    None
+}
+
+fn stream_is_current(app: &App, url: &str) -> bool {
+    app.stations().iter().any(|st| st.url == url)
+}
+
+fn prune_metadata_caches(app: &App, list: &[Station]) {
+    let urls: HashSet<&str> = list.iter().map(|st| st.url.as_str()).collect();
+    app.titles.lock().unwrap().retain(|url, _| urls.contains(url.as_str()));
+    app.bitrates.lock().unwrap().retain(|url, _| urls.contains(url.as_str()));
+    app.bitrate_only_until.lock().unwrap().retain(|url, _| urls.contains(url.as_str()));
+}
+
+fn broadcast_stream_info(app: &App, url: &str, title: &str) {
+    let current = app.stations();
+    for i in app.connected() {
+        if let Some(now) = current.get(i).filter(|now| now.url == url) {
+            app.broadcast(i, &app.info_html(i, now, title));
+        }
+    }
+}
+
+fn update_cached_value(cache: &Mutex<HashMap<String, Arc<str>>>, url: &str, value: &str) -> bool {
+    let mut cache = cache.lock().unwrap();
+    if cache.get(url).map_or("", Arc::as_ref) == value {
+        return false;
+    }
+    cache.insert(url.to_string(), Arc::from(value));
+    true
+}
+
+fn publish_metadata(app: &App, url: &str, title: StreamTitle, bitrate: Option<&str>) {
+    if !stream_is_current(app, url) {
+        return;
+    }
+    let bitrate_changed = bitrate.is_some_and(|br| update_cached_value(&app.bitrates, url, br));
+    let title_changed = match title {
+        StreamTitle::NoMetadata => {
+            app.bitrate_only_until.lock().unwrap().insert(url.to_string(), Instant::now() + BITRATE_ONLY_INTERVAL);
+            update_cached_value(&app.titles, url, "")
+        }
+        StreamTitle::Unchanged => false,
+        StreamTitle::Title(title) => update_cached_value(&app.titles, url, &stations::clean_title(&title)),
+    };
+    if title_changed || bitrate_changed {
+        broadcast_stream_info(app, url, &app.cached_title(url));
+    }
+}
+
 /// Fetches station k's title and sends it to everyone listening to it.
 async fn refresh_station(app: &App, list: &[Station], k: usize) {
     let st = &list[k];
-    let title = match timeout(Duration::from_secs(10), stream_title(&st.url, app.proxy_for(st).as_ref())).await {
-        Ok(Ok((t, br))) => {
-            app.bitrates.lock().unwrap().insert(st.url.clone(), br);
-            if t.is_none() {
-                app.bitrate_only_until.lock().unwrap().insert(st.url.clone(), Instant::now() + BITRATE_ONLY_INTERVAL);
-            }
-            let t = stations::clean_title(t.as_deref().unwrap_or_default());
-            app.titles.lock().unwrap().insert(st.url.clone(), t.clone());
-            t
-        }
-        Ok(Err(e)) => {
-            eprintln!("title of {}: {e}", st.name);
-            app.cached_title(&st.url)
-        }
-        Err(_) => {
-            eprintln!("title of {}: timed out", st.name);
-            app.cached_title(&st.url)
-        }
-    };
-    // A single URL fetch serves all listeners, using their current station details.
-    let current = app.stations();
-    for i in app.listened() {
-        if let Some(now) = current.get(i).filter(|now| now.url == st.url) {
-            app.broadcast(i, &app.info_html(i, now, &title));
-        }
+    let proxy = app.proxy_for(st);
+    match timeout(Duration::from_secs(10), stream_title(&st.url, proxy.as_deref())).await {
+        Ok(Ok((title, br))) => publish_metadata(app, &st.url, title, Some(&br)),
+        Ok(Err(e)) => eprintln!("title of {}: {e}", st.name),
+        Err(_) => eprintln!("title of {}: timed out", st.name),
     }
 }
 
 /// Starts a title fetch for station k unless one for the same stream runs.
 fn refresh_async(app: &Shared, list: &Arc<Vec<Station>>, k: usize) {
     let Some(st) = list.get(k) else { return };
+    let proxy = app.proxy_for(st);
+    let key = RelayKey::new(st, proxy);
+    if app.relays.lock().unwrap().contains_key(&key) || app.opening.lock().unwrap().contains_key(&key) {
+        return;
+    }
     if app.bitrate_only_until.lock().unwrap().get(&st.url).is_some_and(|until| *until > Instant::now()) {
         return;
     }
@@ -311,11 +404,16 @@ fn refresh_async(app: &Shared, list: &Arc<Vec<Station>>, k: usize) {
 async fn title_loop(app: Shared) {
     let mut tick = interval(TITLE_INTERVAL);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let hidden_every = (HIDDEN_TITLE_INTERVAL.as_secs() / TITLE_INTERVAL.as_secs()) as usize;
+    let mut tick_count = 0usize;
     loop {
         tick.tick().await;
+        tick_count = tick_count.wrapping_add(1);
         let list = app.stations();
-        for k in app.listened() {
-            refresh_async(&app, &list, k);
+        for (k, hidden) in app.listened() {
+            if !hidden || tick_count % hidden_every == 0 {
+                refresh_async(&app, &list, k);
+            }
         }
     }
 }
@@ -328,6 +426,10 @@ struct WsMsg {
     action: String,
     #[serde(default)]
     index: i64,
+    #[serde(default)]
+    playing: bool,
+    #[serde(default)]
+    hidden: bool,
 }
 
 /// A random number below n (n > 0), from std's per-process random hash keys
@@ -350,6 +452,19 @@ async fn handle_ws_message(app: &Shared, id: u64, text: &str) {
         let index = app.sessions.lock().unwrap().get(&id).map(|s| s.station);
         if let Some(st) = index.and_then(|i| list.get(i)) {
             toggle_favorite(app, st).await;
+        }
+        return;
+    }
+    if msg.action == "playback" {
+        let station = {
+            let mut sessions = app.sessions.lock().unwrap();
+            let Some(s) = sessions.get_mut(&id) else { return };
+            s.playing = msg.playing;
+            s.hidden = msg.hidden;
+            s.station
+        };
+        if msg.playing {
+            refresh_async(app, &list, station);
         }
         return;
     }
@@ -450,6 +565,7 @@ async fn remove_station(app: &Shared, name: &str) -> Result<usize, String> {
     let settings = save_station_list(app, list).await?;
     let new = Arc::new(settings.stations);
     *app.stations.write().unwrap() = new.clone();
+    prune_metadata_caches(app, new.as_slice());
     let had_proxy = app.proxy.read().unwrap().1.is_some();
     remap_sessions(app, &old, &new, had_proxy);
     eprintln!("Removed station {name:?} ({} stations left)", new.len());
@@ -458,8 +574,8 @@ async fn remove_station(app: &Shared, name: &str) -> Result<usize, String> {
 
 async fn ws_client(app: Shared, mut sock: WebSocket) {
     let id = app.next_id.fetch_add(1, Ordering::Relaxed) as u64;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    app.sessions.lock().unwrap().insert(id, Session { station: 0, tx });
+    let (tx, mut rx) = mpsc::channel(WS_QUEUE);
+    app.sessions.lock().unwrap().insert(id, Session { station: 0, playing: false, hidden: false, tx });
     if let Some(info) = app.station_info(&app.stations(), 0) {
         app.send(id, info);
     }
@@ -477,14 +593,17 @@ async fn ws_client(app: Shared, mut sock: WebSocket) {
                 Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
                 Some(Ok(_)) => last_seen = Instant::now(),
             },
-            Some(html) = rx.recv() => {
-                if sock.send(Message::Text(html.into())).await.is_err() {
-                    break;
+            html = rx.recv() => match html {
+                Some(html) => {
+                    if !matches!(timeout(WS_WRITE_TIMEOUT, sock.send(Message::Text(html.into()))).await, Ok(Ok(()))) {
+                        break;
+                    }
                 }
-            }
+                None => break,
+            },
             _ = ping.tick() => {
                 if last_seen.elapsed() > Duration::from_secs(75)
-                    || sock.send(Message::Ping(Bytes::new())).await.is_err()
+                    || !matches!(timeout(WS_WRITE_TIMEOUT, sock.send(Message::Ping(Bytes::new()))).await, Ok(Ok(())))
                 {
                     break;
                 }
@@ -503,13 +622,24 @@ async fn ws(State(app): State<Shared>, upgrade: WebSocketUpgrade) -> Response {
 const INDEX: &str = include_str!("../assets/templates/index.html");
 const SETTINGS: &str = include_str!("../assets/templates/settings.html");
 
+struct Asset {
+    data: &'static [u8],
+    content_type: &'static str,
+    etag: OnceLock<String>,
+}
+
 macro_rules! assets {
     ($($name:literal => $ct:literal),* $(,)?) => {
-        fn asset(name: &str) -> Option<(&'static [u8], &'static str)> {
-            match name {
-                $($name => Some((include_bytes!(concat!("../assets/static/", $name)), $ct)),)*
-                _ => None,
-            }
+        static ASSETS: OnceLock<Vec<(&str, Asset)>> = OnceLock::new();
+
+        fn asset(name: &str) -> Option<&'static Asset> {
+            ASSETS.get_or_init(|| vec![
+                $(($name, Asset {
+                    data: include_bytes!(concat!("../assets/static/", $name)),
+                    content_type: $ct,
+                    etag: OnceLock::new(),
+                })),*
+            ]).iter().find(|(n, _)| *n == name).map(|(_, asset)| asset)
         }
     };
 }
@@ -530,15 +660,31 @@ assets! {
     "sw.js" => "text/javascript; charset=utf-8",
 }
 
-fn serve_asset(name: &str) -> Response {
-    match asset(name) {
-        Some((data, ct)) => ([(header::CONTENT_TYPE, ct)], data).into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
+fn content_etag(data: &[u8]) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for &b in data {
+        hash = (hash ^ b as u64).wrapping_mul(0x100000001b3);
     }
+    format!("\"{:x}-{hash:016x}\"", data.len())
 }
 
-async fn static_file(Path(path): Path<String>) -> Response {
-    serve_asset(&path)
+fn etag_matches(value: &str, etag: &str) -> bool {
+    value.split(',').map(str::trim).any(|candidate| {
+        candidate == "*" || candidate == etag || candidate.strip_prefix("W/") == Some(etag)
+    })
+}
+
+fn serve_asset(name: &str, headers: &HeaderMap) -> Response {
+    let Some(asset) = asset(name) else { return StatusCode::NOT_FOUND.into_response() };
+    let etag = asset.etag.get_or_init(|| content_etag(asset.data));
+    if headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()).is_some_and(|v| etag_matches(v, etag)) {
+        return (StatusCode::NOT_MODIFIED, [(header::ETAG, etag.as_str())]).into_response();
+    }
+    ([(header::CONTENT_TYPE, asset.content_type), (header::ETAG, etag.as_str())], asset.data).into_response()
+}
+
+async fn static_file(Path(path): Path<String>, headers: HeaderMap) -> Response {
+    serve_asset(&path, &headers)
 }
 
 async fn index(State(app): State<Shared>) -> Html<String> {
@@ -593,7 +739,188 @@ async fn api_remove_station(State(app): State<Shared>, body: Bytes) -> Response 
     }
 }
 
-/// The stream of station `index`, relayed through this server.
+enum RelayRead {
+    Audio(usize),
+    Title(String),
+    Eof,
+}
+
+/// Removes ICY metadata blocks and returns their titles separately.
+struct IcyReader {
+    body: http::Body,
+    metaint: Option<usize>,
+    audio_left: usize,
+}
+
+impl IcyReader {
+    fn new(body: http::Body, metaint: Option<usize>) -> Self {
+        Self { body, metaint, audio_left: metaint.unwrap_or(0) }
+    }
+
+    async fn read(&mut self, buf: &mut [u8]) -> std::io::Result<RelayRead> {
+        if self.metaint.is_some() && self.audio_left == 0 {
+            let mut len = [0u8];
+            self.body.read_full(&mut len).await?;
+            let mut meta = vec![0u8; len[0] as usize * 16];
+            self.body.read_full(&mut meta).await?;
+            self.audio_left = self.metaint.unwrap();
+            if let Some(title) = icy_title(&meta) {
+                return Ok(RelayRead::Title(title));
+            }
+        }
+        let n = match self.metaint {
+            Some(_) => buf.len().min(self.audio_left),
+            None => buf.len(),
+        };
+        let n = self.body.read(&mut buf[..n]).await?;
+        if n == 0 {
+            return Ok(RelayRead::Eof);
+        }
+        self.audio_left = self.audio_left.saturating_sub(n);
+        Ok(RelayRead::Audio(n))
+    }
+}
+
+struct RelaySubscription {
+    app: Shared,
+    key: RelayKey,
+    id: usize,
+    relay: Arc<Relay>,
+}
+
+impl Drop for RelaySubscription {
+    fn drop(&mut self) {
+        // Joining holds the map lock too, so a new subscriber cannot appear
+        // between the empty check and removing the relay.
+        let mut relays = self.app.relays.lock().unwrap();
+        let mut subscribers = self.relay.subscribers.lock().unwrap();
+        subscribers.remove(&self.id);
+        let empty = subscribers.is_empty();
+        if empty && relays.get(&self.key).is_some_and(|current| Arc::ptr_eq(current, &self.relay)) {
+            relays.remove(&self.key);
+        }
+        drop(subscribers);
+        drop(relays);
+        self.relay.writable.notify_one();
+        if empty {
+            self.relay.notify.notify_one();
+        }
+    }
+}
+
+fn shareable_audio(content_type: &str) -> bool {
+    let mime = content_type.split(';').next().unwrap_or("").trim();
+    ["audio/mpeg", "audio/aac", "audio/aacp", "audio/x-aac"].iter().any(|candidate| mime.eq_ignore_ascii_case(candidate))
+}
+
+fn relay_response(app: &Shared, key: RelayKey, relay: Arc<Relay>) -> Response {
+    let Ok(content_type) = HeaderValue::from_str(&relay.content_type) else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let id = app.next_id.fetch_add(1, Ordering::Relaxed);
+    let (tx, rx) = mpsc::channel(4);
+    relay.subscribers.lock().unwrap().insert(id, tx);
+    relay.writable.notify_one();
+    let subscription = RelaySubscription { app: app.clone(), key, id, relay: relay.clone() };
+    Response::builder()
+        .header(header::CONTENT_TYPE, content_type)
+        .body(Body::from_stream(ChannelStream { rx, subscription }))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+// A fast upstream can fill every queue before the HTTP writers are scheduled.
+// Pace it to the fastest listener. Evict a lagging peer only after the writers
+// have had a turn and at least one listener can accept the next chunk.
+async fn send_audio(relay: &Relay, bytes: Bytes) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut yielded = false;
+    loop {
+        {
+            let mut subscribers = relay.subscribers.lock().unwrap();
+            if subscribers.is_empty() {
+                return false;
+            }
+            let full = subscribers.values().filter(|tx| tx.capacity() == 0).count();
+            if full == 0 || (yielded && full < subscribers.len()) {
+                subscribers.retain(|_, tx| tx.try_send(Ok(bytes.clone())).is_ok());
+                return !subscribers.is_empty();
+            }
+        }
+        if yielded {
+            if timeout_at(deadline, relay.writable.notified()).await.is_err() {
+                return false;
+            }
+        } else {
+            tokio::task::yield_now().await;
+            yielded = true;
+        }
+    }
+}
+
+fn publish_relay_bitrate(app: &App, key: &RelayKey, audio: &[u8], icy: &str, has_metadata: bool) {
+    let br = audio::measure(audio).map(|b| b.label()).unwrap_or_else(|| icy.to_string());
+    let title = if has_metadata { StreamTitle::Unchanged } else { StreamTitle::NoMetadata };
+    publish_metadata(app, &key.url, title, Some(&br));
+}
+
+async fn relay_loop(app: Shared, key: RelayKey, relay: Arc<Relay>, mut decoder: IcyReader, icy: String) {
+    let has_metadata = decoder.metaint.is_some();
+    let mut audio = Vec::with_capacity(MEASURE_BYTES);
+    let mut measured = false;
+    let mut buf = vec![0u8; 16 * 1024];
+    let result: std::io::Result<()> = loop {
+        let read = tokio::select! {
+            _ = relay.notify.notified() => {
+                if relay.subscribers.lock().unwrap().is_empty() {
+                    break Ok(());
+                }
+                continue;
+            }
+            r = decoder.read(&mut buf) => r,
+        };
+        match read {
+            Ok(RelayRead::Audio(n)) => {
+                if !measured {
+                    let take = (MEASURE_BYTES - audio.len()).min(n);
+                    audio.extend_from_slice(&buf[..take]);
+                    if audio.len() == MEASURE_BYTES {
+                        measured = true;
+                        publish_relay_bitrate(&app, &key, &audio, &icy, has_metadata);
+                    }
+                }
+                buf.truncate(n);
+                let bytes = Bytes::from(buf);
+                if !send_audio(&relay, bytes).await {
+                    break Ok(());
+                }
+                buf = vec![0u8; 16 * 1024];
+            }
+            Ok(RelayRead::Title(title)) => {
+                publish_metadata(&app, &key.url, StreamTitle::Title(title), None);
+            }
+            Ok(RelayRead::Eof) => break Ok(()),
+            Err(e) => break Err(e),
+        }
+    };
+    if !measured && result.is_ok() {
+        publish_relay_bitrate(&app, &key, &audio, &icy, has_metadata);
+    }
+    let mut relays = app.relays.lock().unwrap();
+    if relays.get(&key).is_some_and(|current| Arc::ptr_eq(current, &relay)) {
+        relays.remove(&key);
+    }
+    drop(relays);
+    let error = result.err().map(RelayError::new);
+    let mut subscribers = relay.subscribers.lock().unwrap();
+    if let Some(error) = error {
+        for tx in subscribers.values() {
+            let _ = tx.try_send(Err(error.clone()));
+        }
+    }
+    subscribers.clear();
+}
+
+/// The stream of station `index`, shared by everyone listening to the same URL.
 async fn station_stream(State(app): State<Shared>, Path(index): Path<String>) -> Response {
     let list = app.stations();
     // /station/1 is the first station: the same numbers as in the player.
@@ -601,58 +928,97 @@ async fn station_stream(State(app): State<Shared>, Path(index): Path<String>) ->
         return StatusCode::NOT_FOUND.into_response();
     };
     let proxy = app.proxy_for(st);
+    let key = RelayKey::new(st, proxy);
+    loop {
+        if let Some(relay) = app.relays.lock().unwrap().get(&key) {
+            return relay_response(&app, key.clone(), relay.clone());
+        }
+        let waiting = {
+            let mut opening = app.opening.lock().unwrap();
+            match opening.entry(key.clone()) {
+                std::collections::hash_map::Entry::Occupied(entry) => Some(entry.get().subscribe()),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(broadcast::channel(1).0);
+                    None
+                }
+            }
+        };
+        if let Some(mut waiting) = waiting {
+            match waiting.recv().await {
+                Ok(OpenResult::Private) => return open_relay(&app, &key, st).await.0,
+                Ok(OpenResult::Failed) => return StatusCode::BAD_GATEWAY.into_response(),
+                // Retry the lookup if the opener installed a relay or disconnected.
+                Ok(OpenResult::Shared) | Err(_) => continue,
+            }
+        }
+        let _opening = Opening { app: &app, key: &key };
+        let (response, result) = open_relay(&app, &key, st).await;
+        if let Some(tx) = app.opening.lock().unwrap().get(&key) {
+            let _ = tx.send(result);
+        }
+        return response;
+    }
+}
+
+#[derive(Clone, Copy)]
+enum OpenResult { Shared, Private, Failed }
+
+struct Opening<'a> {
+    app: &'a App,
+    key: &'a RelayKey,
+}
+
+impl Drop for Opening<'_> {
+    fn drop(&mut self) {
+        self.app.opening.lock().unwrap().remove(self.key);
+    }
+}
+
+async fn open_relay(app: &Shared, key: &RelayKey, st: &Station) -> (Response, OpenResult) {
     // Short enough that the player moves on quickly from a dead station.
-    let resp = match timeout(Duration::from_secs(10), http::get(&st.url, proxy.as_ref(), &[])).await {
+    let resp = match timeout(Duration::from_secs(10), http::get(&st.url, key.proxy.as_deref(), &[("Icy-MetaData", "1")])).await {
         Ok(Ok(r)) if (200..300).contains(&r.status) => r,
         Ok(Ok(r)) => {
             eprintln!("{}: server answered {}", st.name, r.status_text);
-            return StatusCode::BAD_GATEWAY.into_response();
+            return (StatusCode::BAD_GATEWAY.into_response(), OpenResult::Failed);
         }
         Ok(Err(e)) => {
             eprintln!("{}: {e}", st.name);
-            return StatusCode::BAD_GATEWAY.into_response();
+            return (StatusCode::BAD_GATEWAY.into_response(), OpenResult::Failed);
         }
         Err(_) => {
             eprintln!("{}: no answer within 10 s", st.name);
-            return StatusCode::BAD_GATEWAY.into_response();
+            return (StatusCode::BAD_GATEWAY.into_response(), OpenResult::Failed);
         }
     };
-    let ct = match resp.header("content-type") {
+    let shareable = resp.header("content-type").is_some_and(shareable_audio);
+    let content_type = match resp.header("content-type") {
         None | Some("") | Some("application/octet-stream") => "audio/mpeg".to_string(),
         Some(c) => c.to_string(),
     };
-    let (tx, rx) = mpsc::channel::<std::io::Result<Bytes>>(4);
-    let mut body = resp.body;
-    tokio::spawn(async move {
-        loop {
-            let mut buf = vec![0u8; 16 * 1024];
-            // Stop as soon as the listener goes away, even if the station stalls.
-            let n = tokio::select! {
-                _ = tx.closed() => break,
-                r = body.read(&mut buf) => r,
-            };
-            match n {
-                Ok(0) => break,
-                Ok(n) => {
-                    buf.truncate(n);
-                    if tx.send(Ok(Bytes::from(buf))).await.is_err() {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    let _ = tx.send(Err(e)).await;
-                    break;
-                }
-            }
-        }
+    let icy = bitrate(resp.header("icy-br"), resp.header("ice-audio-info"));
+    let metaint = resp.header("icy-metaint").and_then(|v| v.trim().parse::<usize>().ok()).filter(|&n| n > 0);
+    let decoder = IcyReader::new(resp.body, metaint);
+    let relay = Arc::new(Relay {
+        content_type,
+        writable: tokio::sync::Notify::new(),
+        subscribers: Mutex::new(HashMap::new()),
+        notify: tokio::sync::Notify::new(),
     });
-    Response::builder()
-        .header(header::CONTENT_TYPE, ct)
-        .body(Body::from_stream(ChannelStream(rx)))
-        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+    let response = relay_response(app, key.clone(), relay.clone());
+    // MP3 and ADTS AAC can synchronise after joining mid-stream; container
+    // formats such as Ogg need their initial headers, so keep those per client.
+    if shareable {
+        app.relays.lock().unwrap().insert(key.clone(), relay.clone());
+    }
+    tokio::spawn(relay_loop(app.clone(), key.clone(), relay, decoder, icy));
+    (response, if shareable { OpenResult::Shared } else { OpenResult::Private })
 }
 
-struct ChannelStream(mpsc::Receiver<std::io::Result<Bytes>>);
+struct ChannelStream {
+    rx: mpsc::Receiver<RelayResult>,
+    subscription: RelaySubscription,
+}
 
 impl futures_core::Stream for ChannelStream {
     type Item = std::io::Result<Bytes>;
@@ -660,7 +1026,16 @@ impl futures_core::Stream for ChannelStream {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        self.0.poll_recv(cx)
+        use std::task::Poll;
+        match self.rx.poll_recv(cx) {
+            Poll::Ready(Some(Ok(bytes))) => {
+                self.subscription.relay.writable.notify_one();
+                Poll::Ready(Some(Ok(bytes)))
+            }
+            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e.to_io()))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 
@@ -741,13 +1116,18 @@ fn json_error(code: StatusCode, msg: impl Into<String>) -> Response {
     (code, Json(serde_json::json!({ "error": msg.into() }))).into_response()
 }
 
-fn check_auth(app: &App, headers: &HeaderMap) -> Result<(), Response> {
+async fn check_auth(app: &App, headers: &HeaderMap) -> Result<(), Response> {
     // Read from the file every time: it is changed only by editing the file,
-    // and that takes effect without a restart.
-    let password = match stations::load_password(&app.stations_file) {
-        Ok(password) => password,
-        Err(e) => {
+    // and that takes effect without a restart. Keep disk I/O off the executor.
+    let path = app.stations_file.clone();
+    let password = match tokio::task::spawn_blocking(move || stations::load_password(&path)).await {
+        Ok(Ok(password)) => password,
+        Ok(Err(e)) => {
             eprintln!("Cannot read {}: {e}", app.stations_file);
+            return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, "cannot read the settings file"));
+        }
+        Err(e) => {
+            eprintln!("Settings password worker failed: {e}");
             return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, "cannot read the settings file"));
         }
     };
@@ -763,21 +1143,21 @@ fn check_auth(app: &App, headers: &HeaderMap) -> Result<(), Response> {
 }
 
 async fn settings_page(State(app): State<Shared>, headers: HeaderMap) -> Response {
-    if let Err(r) = check_auth(&app, &headers) {
+    if let Err(r) = check_auth(&app, &headers).await {
         return r;
     }
     Html(SETTINGS).into_response()
 }
 
 async fn settings_get(State(app): State<Shared>, headers: HeaderMap) -> Response {
-    if let Err(r) = check_auth(&app, &headers) {
+    if let Err(r) = check_auth(&app, &headers).await {
         return r;
     }
     Json(config_json(&app)).into_response()
 }
 
 async fn settings_put(State(app): State<Shared>, headers: HeaderMap, body: Bytes) -> Response {
-    if let Err(r) = check_auth(&app, &headers) {
+    if let Err(r) = check_auth(&app, &headers).await {
         return r;
     }
     let Ok(input) = serde_json::from_slice::<ConfigJson>(&body) else {
@@ -805,7 +1185,7 @@ async fn apply_settings(app: Shared, input: ConfigJson) -> Response {
         None
     } else {
         match Proxy::parse(&raw) {
-            Ok(p) => Some(p),
+            Ok(p) => Some(Arc::new(p)),
             Err(e) => return json_error(StatusCode::BAD_REQUEST, e),
         }
     };
@@ -830,6 +1210,7 @@ async fn apply_settings(app: Shared, input: ConfigJson) -> Response {
     let had_proxy = std::mem::replace(&mut *app.proxy.write().unwrap(), (raw, parsed)).1.is_some();
     let new = Arc::new(list);
     let old = std::mem::replace(&mut *app.stations.write().unwrap(), new.clone());
+    prune_metadata_caches(&app, new.as_slice());
     remap_sessions(&app, &old, &new, had_proxy);
     eprintln!("Settings saved ({} stations, proxy {has_proxy})", new.len());
     Json(config_json(&app)).into_response()
@@ -854,7 +1235,7 @@ fn remap_sessions(app: &App, old: &[Station], cur: &[Station], had_proxy: bool) 
     for (i, s) in cur.iter().enumerate() {
         index.entry(&s.url).or_insert(i);
     }
-    for s in app.sessions.lock().unwrap().values_mut() {
+    app.sessions.lock().unwrap().retain(|_, s| {
         let idx = s.station;
         let previous = old.get(idx);
         let new_idx = match (previous, cur.get(idx)) {
@@ -869,12 +1250,17 @@ fn remap_sessions(app: &App, old: &[Station], cur: &[Station], had_proxy: bool) 
         let tags_changed = previous.is_some_and(|st| st.favorite != station.favorite
             || (st.use_proxy && had_proxy) != (station.use_proxy && has_proxy));
         if station_changed || tags_changed {
-            let _ = s.tx.send(app.info_html(new_idx, station, &app.cached_title(&station.url)));
+            if s.tx.try_send(app.info_html(new_idx, station, &app.cached_title(&station.url))).is_err() {
+                return false;
+            }
         }
         if station_changed || old.len() != cur.len() {
-            let _ = s.tx.send(App::player_html(new_idx, station, cur.len()));
+            if s.tx.try_send(App::player_html(new_idx, station, cur.len())).is_err() {
+                return false;
+            }
         }
-    }
+        true
+    });
 }
 
 #[derive(Deserialize)]
@@ -968,7 +1354,7 @@ async fn check_stream(url: &str, proxy: Option<&Proxy>) -> CheckResult {
 }
 
 async fn settings_check(State(app): State<Shared>, headers: HeaderMap, body: Bytes) -> Response {
-    if let Err(r) = check_auth(&app, &headers) {
+    if let Err(r) = check_auth(&app, &headers).await {
         return r;
     }
     let Ok(req) = serde_json::from_slice::<CheckReq>(&body) else {
@@ -1086,7 +1472,7 @@ fn main() {
     let proxy = if proxy_raw.is_empty() {
         None
     } else {
-        Some(Proxy::parse(&proxy_raw).unwrap_or_else(|e| fail(e)))
+        Some(Arc::new(Proxy::parse(&proxy_raw).unwrap_or_else(|e| fail(e))))
     };
     if password.is_empty() {
         eprintln!("Settings page has no password (no password = ... in {stations_file})");
@@ -1101,6 +1487,8 @@ fn main() {
         retries: AtomicUsize::new(retries as usize),
         stations_file,
         sessions: Mutex::new(HashMap::new()),
+        relays: Mutex::new(HashMap::new()),
+        opening: Mutex::new(HashMap::new()),
         titles: Mutex::new(HashMap::new()),
         bitrates: Mutex::new(HashMap::new()),
         inflight: Mutex::new(HashSet::new()),
@@ -1115,8 +1503,8 @@ fn main() {
         .route("/api/stations/remove", post(api_remove_station))
         .route("/ws", get(ws))
         .route("/static/{*path}", get(static_file))
-        .route("/sw.js", get(|| async { serve_asset("sw.js") }))
-        .route("/manifest.webmanifest", get(|| async { serve_asset("manifest.webmanifest") }))
+        .route("/sw.js", get(|headers: HeaderMap| async move { serve_asset("sw.js", &headers) }))
+        .route("/manifest.webmanifest", get(|headers: HeaderMap| async move { serve_asset("manifest.webmanifest", &headers) }))
         .route("/settings", get(settings_page))
         .route("/settings/api/stations", get(settings_get).put(settings_put))
         .route("/settings/api/check", post(settings_check))
@@ -1170,6 +1558,54 @@ mod tests {
     }
 
     #[test]
+    fn relay_strips_icy_metadata() {
+        assert!(shareable_audio("audio/mpeg"));
+        assert!(shareable_audio("Audio/AAC; charset=binary"));
+        assert!(!shareable_audio("audio/ogg"));
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut req = [0u8; 1024];
+                sock.read(&mut req).await.unwrap();
+                let mut meta = [0u8; 32];
+                meta[..19].copy_from_slice(b"StreamTitle='Song';");
+                let mut body = b"aaaa".to_vec();
+                body.push(2);
+                body.extend(meta);
+                body.extend(b"bbbb");
+                body.push(0);
+                body.extend(b"cccc");
+                body.push(1);
+                body.extend(b"StreamTitle='';\0");
+                body.extend(b"dd");
+                sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nicy-metaint: 4\r\n\r\n").await.unwrap();
+                sock.write_all(&body).await.unwrap();
+                sock.shutdown().await.unwrap();
+            });
+            let resp = http::get(&format!("http://{addr}/"), None, &[]).await.unwrap();
+            let mut decoder = IcyReader::new(resp.body, Some(4));
+            let mut audio: Vec<u8> = Vec::new();
+            let mut titles = Vec::new();
+            let mut buf = [0u8; 3];
+            loop {
+                match decoder.read(&mut buf).await {
+                    Ok(RelayRead::Audio(n)) => audio.extend(&buf[..n]),
+                    Ok(RelayRead::Title(title)) => titles.push(title),
+                    Ok(RelayRead::Eof) => break,
+                    Err(e) => panic!("audio {audio:?}, titles {titles:?}: {e}"),
+                }
+            }
+            server.await.unwrap();
+            assert_eq!(audio, b"aaaabbbbccccdd");
+            assert_eq!(titles, ["Song", ""]);
+        });
+    }
+
+    #[test]
     fn proxy_mask() {
         let raw = "socks5h://guest:s3cr%40t@192.168.1.10:1080";
         assert_eq!(mask_proxy(raw), "socks5h://guest:********@192.168.1.10:1080");
@@ -1211,6 +1647,19 @@ mod tests {
         // The last station was removed: stay on the last one that is left.
         let cur = [st("A"), st("B"), st("C")];
         assert_eq!(next_station(&old, &cur, &index_of(&cur), 3), 2);
+    }
+
+    #[test]
+    fn static_assets_revalidate() {
+        let response = serve_asset("script.js", &HeaderMap::new());
+        assert_eq!(response.status(), StatusCode::OK);
+        let etag = response.headers().get(header::ETAG).unwrap().to_str().unwrap().to_string();
+        assert!(etag.starts_with('"') && etag.ends_with('"'));
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_NONE_MATCH, HeaderValue::from_str(&format!("\"other\", W/{etag}")).unwrap());
+        let response = serve_asset("script.js", &headers);
+        assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(response.headers().get(header::ETAG).unwrap().to_str().unwrap(), etag);
     }
 
     #[test]

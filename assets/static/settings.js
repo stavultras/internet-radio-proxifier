@@ -49,13 +49,33 @@ function reveal(el) {
 	el.focus();
 }
 
+let refreshMessage = false;
 function setMsg(text, kind) {
+	refreshMessage = false;
 	msg.textContent = text;
 	msg.className = kind || '';
 }
 
 function rows() {
 	return [...list.querySelectorAll('.station-row')];
+}
+
+const rowControls = new WeakMap();
+function controls(r) {
+	let c = rowControls.get(r);
+	if (!c) {
+		c = {
+			name: r.querySelector('.f-name'),
+			url: r.querySelector('.f-url'),
+			proxy: r.querySelector('.f-proxy'),
+			favorite: r.querySelector('.f-fav'),
+			drag: r.querySelector('.b-drag'),
+			del: r.querySelector('.b-del'),
+			result: r.querySelector('.test-result'),
+		};
+		rowControls.set(r, c);
+	}
+	return c;
 }
 
 function current() {
@@ -65,12 +85,15 @@ function current() {
 		random_start: randomStartInput.checked,
 		random: randomInput.checked,
 		retries: retriesValue(),
-		stations: rows().map(r => ({
-			name: r.querySelector('.f-name').value.trim(),
-			url: r.querySelector('.f-url').value.trim(),
-			useProxy: r.querySelector('.f-proxy').checked,
-			favorite: r.querySelector('.f-fav').checked,
-		})),
+		stations: rows().map(r => {
+			const c = controls(r);
+			return {
+				name: c.name.value.trim(),
+				url: c.url.value.trim(),
+				useProxy: c.proxy.checked,
+				favorite: c.favorite.checked,
+			};
+		}),
 	};
 }
 
@@ -78,18 +101,34 @@ function isDirty() {
 	return JSON.stringify(current()) !== JSON.stringify(saved);
 }
 
+let dirtyFrame = 0;
 function refresh() {
-	const rs = rows();
-	rs.forEach((r, i) => {
-		r.querySelector('.b-drag').disabled = rs.length === 1;
-		r.querySelector('.b-del').disabled = rs.length === 1;
+	refreshMessage = true;
+	if (dirtyFrame) return;
+	dirtyFrame = requestAnimationFrame(() => {
+		dirtyFrame = 0;
+		const dirty = isDirty();
+		btnSave.disabled = !dirty;
+		btnRevert.disabled = !dirty;
+		// A save or bulk test may have reported its result since this edit.
+		if (refreshMessage) setMsg(dirty ? 'Unsaved changes' : '', dirty ? 'dirty' : '');
 	});
+}
+
+function refreshProxy() {
+	updateProxyToggles();
+	refresh();
+}
+
+function refreshRows() {
+	const rs = rows();
+	for (const r of rs) {
+		const c = controls(r);
+		c.drag.disabled = rs.length === 1;
+		c.del.disabled = rs.length === 1;
+	}
 	updateProxyToggles(rs);
-	const dirty = isDirty();
-	btnSave.disabled = !dirty;
-	btnRevert.disabled = !dirty;
-	if (dirty) setMsg('Unsaved changes', 'dirty');
-	else if (msg.className === 'dirty') setMsg('');
+	refresh();
 }
 
 // Without a proxy a station's proxy box cannot be ticked (it would not work).
@@ -99,7 +138,8 @@ const proxyAll = document.querySelector('#proxy-all');
 function updateProxyToggles(rs = rows()) {
 	const noProxy = !proxyInput.value.trim();
 	// "proxy for all": ticked when every station is, half when some are.
-	const ticked = rs.filter(r => r.querySelector('.f-proxy').checked).length;
+	let ticked = 0;
+	for (const r of rs) if (controls(r).proxy.checked) ticked++;
 	proxyAll.checked = rs.length > 0 && ticked === rs.length;
 	proxyAll.indeterminate = ticked > 0 && ticked < rs.length;
 	const allOff = noProxy && ticked === 0;
@@ -109,7 +149,7 @@ function updateProxyToggles(rs = rows()) {
 	allLabel.title = allOff ? 'Set a proxy on the Settings tab first'
 		: noProxy ? 'Untick proxy for every station' : 'Tick or untick proxy for every station';
 	for (const r of rs) {
-		const box = r.querySelector('.f-proxy');
+		const box = controls(r).proxy;
 		const off = noProxy && !box.checked;
 		box.disabled = off;
 		const label = box.closest('.proxy-toggle');
@@ -122,24 +162,24 @@ function updateProxyToggles(rs = rows()) {
 proxyAll.addEventListener('change', () => {
 	const on = proxyAll.checked && !!proxyInput.value.trim();
 	for (const r of rows()) {
-		const box = r.querySelector('.f-proxy');
-		if (box.checked === on) continue;
-		box.checked = on;
-		const out = r.querySelector('.test-result');
-		out.textContent = '';
-		out.className = 'test-result';
+		const c = controls(r);
+		if (c.proxy.checked === on) continue;
+		c.proxy.checked = on;
+		c.result.textContent = '';
+		c.result.className = 'test-result';
 	}
-	refresh();
+	refreshProxy();
 });
 
 function addRow(st, focus) {
 	const r = tpl.content.firstElementChild.cloneNode(true);
-	r.querySelector('.f-name').value = st.name;
-	r.querySelector('.f-url').value = st.url;
-	r.querySelector('.f-proxy').checked = !!st.useProxy;
-	r.querySelector('.f-fav').checked = !!st.favorite;
+	const c = controls(r);
+	c.name.value = st.name;
+	c.url.value = st.url;
+	c.proxy.checked = !!st.useProxy;
+	c.favorite.checked = !!st.favorite;
 	list.appendChild(r);
-	if (focus) r.querySelector('.f-name').focus();
+	if (focus) c.name.focus();
 	return r;
 }
 
@@ -152,7 +192,7 @@ function render(cfg) {
 	updateRandomStart();
 	list.replaceChildren();
 	cfg.stations.forEach(st => addRow(st));
-	refresh();
+	refreshRows();
 }
 
 // Returns a human-readable problem with a proxy URL, or '' if it looks fine.
@@ -181,9 +221,10 @@ async function api(method, path, body) {
 }
 
 async function testRow(r, forceProxy) {
-	const out = r.querySelector('.test-result');
-	const url = r.querySelector('.f-url').value.trim();
-	const useProxy = forceProxy ?? r.querySelector('.f-proxy').checked;
+	const c = controls(r);
+	const out = c.result;
+	const url = c.url.value.trim();
+	const useProxy = forceProxy ?? c.proxy.checked;
 	if (!url) { out.className = 'test-result bad'; out.textContent = 'No URL'; return false; }
 	out.className = 'test-result busy';
 	out.textContent = useProxy ? 'testing via proxy…' : 'testing…';
@@ -191,7 +232,7 @@ async function testRow(r, forceProxy) {
 		const res = await api('POST', 'check', {url, useProxy, proxy: proxyInput.value.trim()});
 		const info = [res.contentType, res.bitrate && res.bitrate + ' kbps', res.icyName].filter(Boolean).join(' · ');
 		out.className = 'test-result ' + (res.ok ? 'ok' : 'bad');
-		const how = useProxy ? ' [via proxy]' : r.querySelector('.f-proxy').checked ? ' [without proxy]' : '';
+		const how = useProxy ? ' [via proxy]' : c.proxy.checked ? ' [without proxy]' : '';
 		out.textContent = (res.ok ? '✓ works' : '✗ ' + res.error) + how + (info ? '  (' + info + ')' : '');
 		return res.ok;
 	} catch (e) {
@@ -203,11 +244,12 @@ async function testRow(r, forceProxy) {
 
 list.addEventListener('input', e => {
 	e.target.classList.remove('invalid');
-	const out = e.target.closest('.station-row').querySelector('.test-result');
+	const out = controls(e.target.closest('.station-row')).result;
 	if (e.target.classList.contains('f-url') || e.target.classList.contains('f-proxy')) { out.textContent = ''; out.className = 'test-result'; }
-	refresh();
+	if (e.target.classList.contains('f-proxy')) refreshProxy();
+	else refresh();
 });
-proxyInput.addEventListener('input', () => { proxyInput.classList.remove('invalid'); refresh(); });
+proxyInput.addEventListener('input', () => { proxyInput.classList.remove('invalid'); refreshProxy(); });
 // "Start with a random station" only works with Autoplay.
 function updateRandomStart() {
 	randomStartInput.disabled = !autoplayInput.checked;
@@ -255,10 +297,10 @@ document.querySelector('#btn-proxy-failing').addEventListener('click', async e =
 	const failing = rs.filter((r, i) => !direct[i]);
 	const viaProxy = await testRows(failing, true, 'Testing the failing ones via proxy:');
 	let fixed = 0;
-	failing.forEach((r, i) => { if (viaProxy[i]) { r.querySelector('.f-proxy').checked = true; fixed++; } });
+	failing.forEach((r, i) => { if (viaProxy[i]) { controls(r).proxy.checked = true; fixed++; } });
 	// Stations that work directly don't need the proxy.
-	rs.forEach((r, i) => { if (direct[i]) r.querySelector('.f-proxy').checked = false; });
-	refresh();
+	rs.forEach((r, i) => { if (direct[i]) controls(r).proxy.checked = false; });
+	refreshProxy();
 	const still = failing.length - fixed;
 	setMsg(`${fixed} station(s) work via proxy and were ticked` + (still ? `, ${still} fail either way` : '') + '. Review and Save.', still ? 'dirty' : 'ok');
 	e.target.disabled = false;
@@ -268,9 +310,13 @@ list.addEventListener('click', e => {
 	const b = e.target.closest('button');
 	if (!b) return;
 	const r = b.closest('.station-row');
-	if (b.classList.contains('b-del')) r.remove();
 	if (b.classList.contains('b-test')) { testRow(r); return; }
-	refresh();
+	if (b.classList.contains('b-del')) {
+		r.remove();
+		refreshRows();
+	} else {
+		refresh();
+	}
 	if (document.body.contains(b) && !b.disabled) b.focus();
 });
 
@@ -320,7 +366,7 @@ list.addEventListener('keydown', e => {
 
 document.querySelector('#btn-add').addEventListener('click', () => {
 	addRow({name: '', url: ''}, true);
-	refresh();
+	refreshRows();
 });
 
 document.querySelector('#btn-test-all').addEventListener('click', async e => {
@@ -365,7 +411,7 @@ btnSave.addEventListener('click', async () => {
 		reveal(proxyInput);
 		return;
 	}
-	if (rows().some(r => r.querySelector('.f-proxy').checked) && !pv) {
+	if (rows().some(r => controls(r).proxy.checked) && !pv) {
 		setMsg('Some stations use the proxy, but no proxy is set', 'bad');
 		proxyInput.classList.add('invalid');
 		reveal(proxyInput);
@@ -383,8 +429,8 @@ btnSave.addEventListener('click', async () => {
 		render(saved);
 		setMsg(`Saved ${saved.stations.length} stations. Listeners get the new list right away.`, 'ok');
 	} catch (e) {
-		setMsg('Not saved: ' + e.message, 'bad');
 		refresh();
+		setMsg('Not saved: ' + e.message, 'bad');
 	}
 });
 

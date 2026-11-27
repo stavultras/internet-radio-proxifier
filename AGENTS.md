@@ -57,7 +57,7 @@ need it).
 
 ```sh
 cargo build --release                  # native release binary
-cargo test --locked                    # 20 unit tests, all offline
+cargo test --locked                    # 22 unit tests, all offline
 cargo run -- -a 127.0.0.1 -p 19876 -c /tmp/radio-settings.ini
 curl -sS http://127.0.0.1:19876/ | head
 ./build.sh                             # all release packages into dist/
@@ -109,7 +109,8 @@ settings.example.ini                   credential-free starter stations
 `App` in `src/main.rs` is the whole state: stations
 (`RwLock<Arc<Vec<Station>>>`), proxy raw string plus parsed form, three
 feature flags (`autoplay`, `random_start`, `random`), `retries`, the settings
-file path, websocket sessions, song-title and bitrate caches (both keyed by
+file path, websocket sessions, shared live relays (keyed by stream URL and
+whether a proxy is used), song-title and bitrate caches (both keyed by
 **stream URL**), an in-flight set for title fetches, and a save lock.
 
 ### Routes
@@ -129,17 +130,20 @@ file path, websocket sessions, song-title and bitrate caches (both keyed by
 
 All responses get `Cache-Control: no-cache` from the `no_cache` middleware.
 Embedded files have no mtime, so without it browsers keep old JS after an
-upgrade.
+upgrade. Static assets also carry a lazily computed content-hash `ETag`;
+matching `If-None-Match` requests get a 304 instead of the full asset.
 
 ### Websocket protocol
 
-Client messages are JSON `{action, index}`:
+Client messages are JSON `{action, index, playing, hidden}` (the last three
+are used only by the relevant actions):
 
 | action | effect |
 | --- | --- |
 | `next` / `previous` | step through `play_order()`; with `random` on, pick any station but the current one |
 | `select` | jump to `index` (0-based, range-checked) |
 | `favorite` | toggle the favorite of the session's **current** station and save immediately |
+| `playback` | update playing/visibility state; paused sessions are not polled and hidden-only ones use a slower title interval |
 
 The server pushes HTML fragments (`#station-tags`, `#station-name`,
 `#station-title`, `#station-fav`, `#audio-source`); the htmx WS extension
@@ -150,11 +154,13 @@ swaps them **by id, replacing the elements**. Two consequences:
 - On a station switch the server sends the station info **before**
   `player_html`, so the name shows immediately (see below).
 
-A new session starts at station 0 and gets its info right away. The server
-pings every 30 s and drops a session after 75 s of silence, so vanished
-clients stop being polled for titles. `TCP_NODELAY` is set on accepted
-sockets (`tap_io`) and outbound connections: without it, small WS updates
-waited ~43 ms for ACKs; with it the name arrives in ~1 ms. Keep both.
+A new session starts at station 0, paused, and gets its info right away. The
+server pings every 30 s and drops a session after 75 s of silence, so vanished
+clients stop being polled for titles. Outbound updates use an 8-message bounded
+queue and 10 s write timeout; slow or vanished clients are disconnected instead
+of accumulating an unbounded queue. `TCP_NODELAY` is set on accepted sockets
+(`tap_io`) and outbound connections: without it, small WS updates waited ~43 ms
+for ACKs; with it the name arrives in ~1 ms. Keep both.
 
 ### Station numbering, ordering, favorites
 
@@ -213,9 +219,10 @@ waited ~43 ms for ACKs; with it the name arrives in ~1 ms. Keep both.
 - **The settings-page password can only be set by editing the file.** Never
   add a UI field for it, never render it, never overwrite it on save (every
   save re-reads it from disk). Username is `admin`; `check_auth` reads the
-  file on **every request**, stopping at the first `[station]` line
-  (`load_password`), so a hand edit takes effect without a restart and auth
-  does not parse the station list. An empty password means the page is open.
+  file on **every request** on the blocking pool, stopping at the first
+  `[station]` line (`load_password`), so a hand edit takes effect without a
+  restart, auth does not parse the station list, and disk I/O does not stall
+  the async executor. An empty password means the page is open.
 - Saving is atomic (temp file `.settings-<pid>-<nanos>.ini` in the same
   directory, `create_new`, `sync_all`, rename) and mode `0600` on Unix
   because the file holds proxy passwords. Keep both. Saves run on the
@@ -246,8 +253,8 @@ dependencies.
   `https`. **Both** SOCKS schemes send the hostname to the proxy (DNS on the
   proxy); username/password auth (method 2) is used when a user is present.
 - Plain HTTP proxy: absolute-form request + `Proxy-Authorization`. HTTPS
-  target: `CONNECT` (reply read byte-by-byte so no tunnel bytes are
-  consumed). HTTPS proxy: TLS to the proxy first.
+  target: `CONNECT` (buffered reply lines; the `BufReader` is carried into the
+  tunnel so buffered bytes are not lost). HTTPS proxy: TLS to the proxy first.
 - TLS roots: `SSL_CERT_FILE`, then `/etc/ssl/certs/ca-certificates.crt`,
   `/etc/ssl/cert.pem`, `/etc/pki/tls/certs/ca-bundle.crt`; Windows falls back
   to bundled `webpki-roots`. No roots → a warning, https stations fail; the
@@ -261,16 +268,21 @@ dependencies.
 
 ### Titles and bitrate
 
-- `title_loop` fetches every 5 s, **only for stations someone is listening
-  to** (`listened()`), deduplicated per stream URL (`inflight`). Fetching all
-  stations once caused a ~5 s name delay; never reintroduce it.
+- An active shared relay supplies ICY titles directly from its audio stream.
+  `title_loop` is the fallback: it fetches every 5 s, **only for stations with
+  a playing websocket client** (`listened()`), skips streams with an active
+  relay, and deduplicates per stream URL (`inflight`). Paused pages do not keep
+  making title connections; when every playing client is in a hidden tab, the
+  fallback interval is 30 s instead of 5 s. Fetching all stations once caused a
+  ~5 s name delay; never reintroduce it.
 - Streams **without ICY metadata** have no title, so after one successful
   look they are skipped for 5 minutes (`BITRATE_ONLY_INTERVAL`); their
   bitrate cannot change. A stream with metadata but an empty `StreamTitle`
   keeps being polled, because stations often start sending titles late.
 - Each fetch has a 10 s timeout; on error/timeout the **last cached title is
   kept**. Caches are keyed by stream URL and survive station switches, so
-  returning to a station shows its last title immediately.
+  returning to a station shows its last title immediately. Entries for removed
+  URLs are pruned on list saves, and in-flight work checks before reinserting.
 - ICY metadata has no declared charset: decode UTF-8, otherwise
   Windows-1252 (`decode_title`, CP1252 table for 0x80–0x9F) — this fixed
   names like `Wölli`. `clean_title()` turns `Title~Artist~…` (≥4 parts) into
@@ -288,9 +300,14 @@ dependencies.
 - `GET /station/N`: 10 s connect timeout; any failure (DNS, connect, non-2xx,
   timeout) → **502** with a log line, so the player moves on quickly.
   Content-Type falls back to `audio/mpeg` when missing, empty or
-  `application/octet-stream`. Audio is relayed in 16 KiB chunks through a
-  4-slot channel; the upstream read stops as soon as the listener goes away
-  (`tx.closed()`), even if the station stalls.
+  `application/octet-stream`. MP3/AAC listeners on the same stream URL and
+  proxy mode share one upstream (container formats such as Ogg stay per-client
+  because a late joiner needs their headers). The relay requests ICY metadata,
+  strips it from the audio
+  and publishes titles/bitrate to the caches. Audio is fanned out in 16 KiB
+  chunks through a bounded 4-slot channel per listener; slow listeners are
+  dropped without blocking the others. The upstream read stops when the last
+  listener goes away, even if the station stalls.
 - `POST /settings/api/check`: 15 s deadline, reads 64 KB (~4 s of 128 kbps
   audio — catches streams that burst and stall), requires status 200, and
   reports `ok/status/contentType/bitrate/icyName/error`. Too slow →
@@ -586,7 +603,7 @@ IPKG_BUILD=$(ls ~/.cache/openwrt-toolchains/ipkg-build-* | head -1) \
 
 Before reporting work done:
 
-1. `cargo test --locked` passes (20 tests, offline).
+1. `cargo test --locked` passes (22 tests, offline).
 2. `cargo build --release --locked` passes.
 3. Start the binary with a **temporary** settings file on a non-default
    port (record `$!`, kill that PID) and check:

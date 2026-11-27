@@ -23,13 +23,6 @@ function setStatus(text, kind = '') {
 let socket;
 let elt;
 
-// Document.addEventListener('visibilitychange', event => {
-//	console.log('visibilitychange', document.visibilityState);
-//	if (socket) {
-//		socket.send(document.visibilityState, elt);
-//	}
-// });
-//
 // The websocket to this server only matters to the user when it is gone
 // (station changes and titles stop working).
 let serverLost = false;
@@ -41,6 +34,7 @@ document.body.addEventListener('htmx:wsClose', () => {
 document.body.addEventListener('htmx:wsOpen', event => {
 	socket = event.detail.socketWrapper;
 	elt = event.detail.elt;
+	sendPlaybackState();
 	if (serverLost) {
 		serverLost = false;
 		showPlayerState();
@@ -48,6 +42,12 @@ document.body.addEventListener('htmx:wsOpen', event => {
 });
 
 const player = document.querySelector('#audio-player');
+function sendPlaybackState() {
+	if (socket) socket.send(JSON.stringify({action: 'playback', playing: !player.paused, hidden: document.hidden}), elt);
+}
+player.addEventListener('play', sendPlaybackState);
+player.addEventListener('pause', sendPlaybackState);
+document.addEventListener('visibilitychange', sendPlaybackState);
 // Settings page "Autoplay": start playing as soon as the page opens.
 const AUTOPLAY = player.hasAttribute('data-autoplay');
 // Settings page "Start with a random station" (only together with autoplay).
@@ -403,9 +403,7 @@ const stationMessage = document.querySelector('#station-dialog-msg');
 let stationMessageTimer = 0;
 
 // "(448)", or "(12 of 448)" while the filter hides some.
-function updateStationCount() {
-	const all = stationPicker.children.length;
-	const shown = [...stationPicker.children].filter(li => !li.hidden).length;
+function updateStationCount(all, shown) {
 	stationCount.textContent = shown === all ? `(${all})` : `(${shown} of ${all})`;
 }
 
@@ -423,12 +421,12 @@ function currentStationIndex() {
 // not 112).
 function applyStationFilter() {
 	const q = stationFilter.value.trim().toLowerCase().replace(/^#/, '');
+	let shown = 0;
 	for (const li of stationPicker.children) {
-		const b = li.querySelector('.station-pick');
-		const name = b.querySelector('.pick-name').textContent.toLowerCase();
-		li.hidden = q !== '' && !name.includes(q) && String(Number(b.dataset.index) + 1) !== q;
+		li.hidden = q !== '' && !li.dataset.search.includes(q) && li.dataset.number !== q;
+		if (!li.hidden) shown++;
 	}
-	updateStationCount();
+	updateStationCount(stationPicker.children.length, shown);
 }
 
 function setStationMessage(text, bad = false) {
@@ -445,6 +443,8 @@ function setStationMessage(text, bad = false) {
 // a button in a button is invalid and the click would select the station).
 function stationRow({index: i, name, proxy, favorite}, count, cur) {
 	const li = document.createElement('li');
+	li.dataset.search = name.toLowerCase();
+	li.dataset.number = i + 1;
 	const b = document.createElement('button');
 	b.type = 'button';
 	b.className = 'station-pick';
@@ -611,14 +611,8 @@ stationPicker.addEventListener('click', e => {
 });
 
 // Random station, never the one that is playing now.
-document.querySelector('#button-random').addEventListener('click', async () => {
-	let count = 0;
-	try {
-		count = (await (await fetch('/api/stations')).json()).length;
-	} catch (e) {
-		status.innerText = 'Could not load station list';
-		return;
-	}
+document.querySelector('#button-random').addEventListener('click', () => {
+	const count = sourceStationCount();
 	if (count < 2) return;
 	const cur = Number(document.querySelector('#audio-source')?.dataset.index ?? -1);
 	let next = Math.floor(Math.random() * (count - 1));

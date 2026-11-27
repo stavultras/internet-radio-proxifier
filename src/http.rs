@@ -20,7 +20,7 @@ pub fn err(msg: impl Into<String>) -> io::Error {
     io::Error::other(msg.into())
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Url {
     pub scheme: String,
     pub user: Option<String>,
@@ -169,14 +169,14 @@ pub fn base64(data: &[u8]) -> String {
 
 // ---------------------------------------------------------------- proxies
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Kind {
     Socks5,
     Http,
     Https,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Proxy {
     kind: Kind,
     url: Url,
@@ -365,21 +365,26 @@ async fn open(u: &Url, proxy: Option<&Proxy>) -> io::Result<(BoxConn, bool, Stri
             let a = u.authority(true);
             c.write_all(format!("CONNECT {a} HTTP/1.1\r\nHost: {a}\r\n{}\r\n", proxy_auth(&p.url)).as_bytes())
                 .await?;
-            // Read the reply byte by byte so nothing of the tunnel is consumed.
-            let mut head = Vec::new();
-            let mut b = [0u8];
-            while !head.ends_with(b"\r\n\r\n") && !head.ends_with(b"\n\n") {
-                if c.read(&mut b).await? == 0 || head.len() > 16384 {
-                    return Err(err("proxy closed the connection"));
-                }
-                head.push(b[0]);
-            }
-            let line = String::from_utf8_lossy(&head);
-            let code = line.split_whitespace().nth(1).unwrap_or("");
+            // Buffered reads preserve anything read beyond the reply without
+            // waiting for one socket read per header byte.
+            let mut buffered = BufReader::new(c);
+            let status = read_line(&mut buffered).await.map_err(|_| err("proxy closed the connection"))?;
+            let code = status.split_whitespace().nth(1).unwrap_or("");
             if !code.starts_with('2') {
-                let status = line.lines().next().unwrap_or("").trim();
                 return Err(err(format!("proxy refused the connection: {status}")));
             }
+            let mut head_len = status.len();
+            loop {
+                let line = read_line(&mut buffered).await.map_err(|_| err("proxy closed the connection"))?;
+                head_len += line.len() + 2;
+                if head_len > 16384 {
+                    return Err(err("proxy response headers are too large"));
+                }
+                if line.is_empty() {
+                    break;
+                }
+            }
+            let c: BoxConn = Box::new(buffered);
             c
         }
     };
