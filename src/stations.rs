@@ -55,6 +55,7 @@ pub struct Settings {
     pub stations: Vec<Station>,
     /// Proxy URL, "" for none.
     pub proxy: String,
+    pub user_agent: String,
     /// Settings page password, "" for none.
     pub password: String,
     /// Start playing as soon as the player page opens.
@@ -73,7 +74,7 @@ pub const MAX_RETRIES: u32 = 10;
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { stations: Vec::new(), proxy: String::new(), password: String::new(), autoplay: true, random_start: false, random: false, retries: DEFAULT_RETRIES }
+        Settings { stations: Vec::new(), proxy: String::new(), user_agent: crate::http::DEFAULT_USER_AGENT.into(), password: String::new(), autoplay: true, random_start: false, random: false, retries: DEFAULT_RETRIES }
     }
 }
 
@@ -84,6 +85,7 @@ fn section_name(line: &str) -> Option<&str> {
 pub fn parse(text: &str) -> Settings {
     let mut list: Vec<Station> = Vec::new();
     let mut proxy = String::new();
+    let mut user_agent = crate::http::DEFAULT_USER_AGENT.to_string();
     let mut password = String::new();
     let mut autoplay = true;
     let mut random_start = false;
@@ -102,6 +104,7 @@ pub fn parse(text: &str) -> Settings {
         let (key, value) = (line[..i].trim(), ini_value(&line[i + 1..]));
         // Keys before the first [station] section are global settings.
         match (list.last_mut(), key) {
+            (None, "user_agent") => user_agent = if value.is_empty() { crate::http::DEFAULT_USER_AGENT.into() } else { value },
             (None, "proxy_url") => proxy = value,
             (None, "password") => password = value,
             (None, "autoplay") => autoplay = parse_bool(&value),
@@ -118,7 +121,7 @@ pub fn parse(text: &str) -> Settings {
             _ => {}
         }
     }
-    Settings { stations: list, proxy: proxy.trim().to_string(), password, autoplay, random_start, random, retries }
+    Settings { stations: list, proxy: proxy.trim().to_string(), user_agent, password, autoplay, random_start, random, retries }
 }
 
 pub fn load(path: &str) -> io::Result<Settings> {
@@ -187,6 +190,7 @@ pub fn render(s: &Settings) -> String {
     if !s.password.is_empty() {
         out += &format!("password  = {}\n", ini_quote(&s.password));
     }
+    out += &format!("user_agent = '{}'\n", s.user_agent);
     if !s.proxy.is_empty() {
         out += &format!("proxy_url = {}\n", ini_quote(&s.proxy));
     }
@@ -321,7 +325,8 @@ mod tests {
         assert_eq!(parse("retries = 0\n[A]\nurl = http://a\n").retries, 0);
         assert_eq!(parse("retries = 99\n[A]\nurl = http://a\n").retries, MAX_RETRIES);
         assert_eq!(parse("retries = x\n[A]\nurl = http://a\n").retries, DEFAULT_RETRIES);
-        let off = Settings { autoplay: false, random_start: true, random: true, retries: 0, ..s.clone() };
+        assert_eq!(s.user_agent, crate::http::DEFAULT_USER_AGENT);
+        let off = Settings { user_agent: "Radio/1.0 (Linux; test)".into(), autoplay: false, random_start: true, random: true, retries: 0, ..s.clone() };
         assert_eq!(parse(&render(&off)), off);
         let list = &s.stations;
         assert_eq!(list.len(), 4);

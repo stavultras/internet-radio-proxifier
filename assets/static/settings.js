@@ -5,12 +5,13 @@ const tpl = document.querySelector('#row-template');
 const msg = document.querySelector('#settings-msg');
 const btnSave = document.querySelector('#btn-save');
 const btnRevert = document.querySelector('#btn-revert');
+const userAgentInput = document.querySelector('#user-agent');
 const proxyInput = document.querySelector('#proxy-url');
 const autoplayInput = document.querySelector('#autoplay');
 const randomInput = document.querySelector('#random');
 const randomStartInput = document.querySelector('#random-start');
 const retriesInput = document.querySelector('#retries');
-let saved = {proxy: '', autoplay: true, random_start: false, random: false, retries: 3, stations: []};
+let saved = {user_agent: '', proxy: '', autoplay: true, random_start: false, random: false, retries: 3, stations: []};
 
 // 0 to 10; anything else falls back to the default.
 function retriesValue() {
@@ -80,6 +81,7 @@ function controls(r) {
 
 function current() {
 	return {
+		user_agent: userAgentInput.value.trim(),
 		proxy: proxyInput.value.trim(),
 		autoplay: autoplayInput.checked,
 		random_start: randomStartInput.checked,
@@ -184,6 +186,7 @@ function addRow(st, focus) {
 }
 
 function render(cfg) {
+	userAgentInput.value = cfg.user_agent;
 	proxyInput.value = cfg.proxy || '';
 	autoplayInput.checked = cfg.autoplay;
 	randomInput.checked = cfg.random;
@@ -229,7 +232,7 @@ async function testRow(r, forceProxy) {
 	out.className = 'test-result busy';
 	out.textContent = useProxy ? 'testing via proxy…' : 'testing…';
 	try {
-		const res = await api('POST', 'check', {url, useProxy, proxy: proxyInput.value.trim()});
+		const res = await api('POST', 'check', {url, useProxy, user_agent: userAgentInput.value.trim(), proxy: proxyInput.value.trim()});
 		const info = [res.contentType, res.bitrate && res.bitrate + ' kbps', res.icyName].filter(Boolean).join(' · ');
 		out.className = 'test-result ' + (res.ok ? 'ok' : 'bad');
 		const how = useProxy ? ' [via proxy]' : c.proxy.checked ? ' [without proxy]' : '';
@@ -249,6 +252,7 @@ list.addEventListener('input', e => {
 	if (e.target.classList.contains('f-proxy')) refreshProxy();
 	else refresh();
 });
+userAgentInput.addEventListener('input', () => { userAgentInput.classList.remove('invalid'); refresh(); });
 proxyInput.addEventListener('input', () => { proxyInput.classList.remove('invalid'); refreshProxy(); });
 // "Start with a random station" only works with Autoplay.
 function updateRandomStart() {
@@ -393,6 +397,12 @@ document.querySelector('#btn-test-direct').addEventListener('click', async e => 
 btnRevert.addEventListener('click', () => { render(saved); setMsg(''); });
 
 btnSave.addEventListener('click', async () => {
+	if (/[^ -~]/.test(userAgentInput.value)) {
+		userAgentInput.classList.add('invalid');
+		setMsg('User Agent must contain only printable ASCII characters', 'bad');
+		reveal(userAgentInput);
+		return;
+	}
 	let firstBad = null;
 	for (const r of rows()) {
 		for (const cls of ['.f-name', '.f-url']) {

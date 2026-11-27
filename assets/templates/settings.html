@@ -59,6 +59,12 @@
 			<input id="proxy-url" placeholder="socks5://user:password@192.168.1.10:1080" autocomplete="off" spellcheck="false">
 			<p class="hint">Used only by stations with <b>proxy</b> ticked. Supports socks5://, socks5h:// (DNS on the proxy), http://. Format: socks5h://user:password@host:port; without a port, 1080 is used for SOCKS. Leave empty for none. The saved password is shown as ********; leave it as is to keep it.</p>
 		</section>
+
+		<section class="proxy-box">
+			<label for="user-agent">User Agent</label>
+			<input id="user-agent" autocomplete="off" spellcheck="false">
+			<p class="hint">Sent to stations when playing or testing a stream. Clear the field and save to restore the Firefox default.</p>
+		</section>
 		</div>
 
 		<!-- on both tabs: saves stations and settings together -->

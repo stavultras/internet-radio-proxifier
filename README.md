@@ -99,6 +99,8 @@ away.
   before the player skips it; 0 skips right away
 - **Proxy**: `socks5://`, `socks5h://` (DNS on the proxy), `http://` or
   `https://`. The saved password is shown as `********`
+- **User Agent** sets the HTTP header sent to stations during playback, metadata
+  requests, and stream tests. Clear it and save to restore the Firefox default.
 
 ![Settings: options](docs/settings-options.png)
 
@@ -232,6 +234,8 @@ favorite  = true
 - `password`: settings page password; without it the page is open
 - `proxy_url`: `socks5://`, `socks5h://` (DNS on the proxy), `http://` or
   `https://`; without a port, 1080 is used for SOCKS
+- `user_agent` sets the outbound User-Agent. The default is desktop Firefox on
+  Linux. Quote custom values containing semicolons or `#` in the INI file.
 - `autoplay`: start playing as soon as the player page opens (default true)
 - `random_start`: with `autoplay`, start with a random station instead of
   the one played last in this browser

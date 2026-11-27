@@ -10,7 +10,16 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 use tokio::net::TcpStream;
 
 // Some stream hosts (e.g. SomaFM) reject unknown clients without a User-Agent.
-pub const USER_AGENT: &str = "internet-radio-proxifier (+https://github.com/stavultras/internet-radio-proxifier)";
+pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:161.0) Gecko/20100101 Firefox/161.0";
+
+pub fn user_agent(value: &str) -> Result<&str, &'static str> {
+    if !value.bytes().all(|b| (b' '..=b'~').contains(&b)) {
+        return Err("User Agent must contain only printable ASCII characters");
+    }
+    let value = value.trim();
+    Ok(if value.is_empty() { DEFAULT_USER_AGENT } else { value })
+}
+
 
 pub trait Conn: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Conn for T {}
@@ -508,12 +517,12 @@ async fn read_line(r: &mut BufReader<BoxConn>) -> io::Result<String> {
     Ok(String::from_utf8_lossy(&line).trim_end_matches(['\r', '\n']).to_string())
 }
 
-async fn get_once(u: &Url, proxy: Option<&Proxy>, extra: &[(&str, &str)]) -> io::Result<Response> {
+async fn get_once(u: &Url, proxy: Option<&Proxy>, agent: &str, extra: &[(&str, &str)]) -> io::Result<Response> {
     let (mut c, absolute, more) = open(u, proxy).await?;
     let host = u.authority(false);
     let target = if absolute { format!("http://{host}{}", u.target) } else { u.target.clone() };
     let mut req = format!(
-        "GET {target} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: {USER_AGENT}\r\nAccept: */*\r\nConnection: close\r\n{more}"
+        "GET {target} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: {agent}\r\nAccept: */*\r\nConnection: close\r\n{more}"
     );
     if let Some(user) = &u.user {
         let cred = format!("{user}:{}", u.pass.as_deref().unwrap_or(""));
@@ -565,12 +574,13 @@ async fn get_once(u: &Url, proxy: Option<&Proxy>, extra: &[(&str, &str)]) -> io:
 }
 
 /// GET with up to 10 redirects.
-pub async fn get(url: &str, proxy: Option<&Proxy>, extra: &[(&str, &str)]) -> io::Result<Response> {
+pub async fn get(url: &str, proxy: Option<&Proxy>, agent: &str, extra: &[(&str, &str)]) -> io::Result<Response> {
+    let agent = user_agent(agent).map_err(err)?;
     let mut u = Url::parse(url)
         .filter(|u| u.scheme == "http" || u.scheme == "https")
         .ok_or_else(|| err("URL must start with http:// or https://"))?;
     for _ in 0..10 {
-        let resp = get_once(&u, proxy, extra).await?;
+        let resp = get_once(&u, proxy, agent, extra).await?;
         if matches!(resp.status, 301 | 302 | 303 | 307 | 308) {
             if let Some(next) = resp.header("location").and_then(|l| u.join(l)) {
                 if next.scheme != "http" && next.scheme != "https" {

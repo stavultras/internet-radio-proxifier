@@ -202,7 +202,7 @@ for ACKs; with it the name arrives in ~1 ms. Keep both.
 
 - The INI file is the single source of truth; there is no database.
 - **The station name is the section header** (`[ROCK FM]`), not a key.
-  Per-station keys: `url`, `use_proxy`, `favorite`. Global keys (`password`,
+  Per-station keys: `url`, `use_proxy`, `favorite`. Global keys (`user_agent`, `password`,
   `proxy_url`, `autoplay`, `random_start`, `random`, `retries`) must appear
   **before the first section**; there is no `[DEFAULT]` and no `:` separator.
 - Values: `"""…"""`, backticks and single/double quotes are literal;
@@ -247,7 +247,8 @@ with `user:pass@` gets Basic auth). Do not replace it with `reqwest`/`hyper`
 unless the maintainer asks: the point is a small, auditable binary with few
 dependencies.
 
-- `USER_AGENT` is required: some stream hosts (e.g. SomaFM) reject unknown
+- The global `user_agent` defaults to a desktop Firefox header and applies to
+  relays, metadata requests, and checks. A User-Agent is required: some stream hosts (e.g. SomaFM) reject unknown
   clients.
 - SOCKS default port is 1080; schemes are `socks5`, `socks5h`, `http`,
   `https`. **Both** SOCKS schemes send the hostname to the proxy (DNS on the

@@ -46,11 +46,12 @@ struct Session {
 struct RelayKey {
     url: String,
     proxy: Option<Arc<Proxy>>,
+    user_agent: Arc<str>,
 }
 
 impl RelayKey {
-    fn new(st: &Station, proxy: Option<Arc<Proxy>>) -> Self {
-        Self { url: st.url.clone(), proxy }
+    fn new(st: &Station, proxy: Option<Arc<Proxy>>, user_agent: Arc<str>) -> Self {
+        Self { url: st.url.clone(), proxy, user_agent }
     }
 }
 
@@ -91,6 +92,7 @@ struct App {
     random: std::sync::atomic::AtomicBool,
     /// Reconnects to a station that stopped, before the player skips it.
     retries: AtomicUsize,
+    user_agent: RwLock<Arc<str>>,
     stations_file: String,
     sessions: Mutex<HashMap<u64, Session>>,
     /// Live upstreams shared by everyone playing the same stream and proxy.
@@ -128,6 +130,10 @@ fn esc(s: &str) -> String {
 impl App {
     fn stations(&self) -> Arc<Vec<Station>> {
         self.stations.read().unwrap().clone()
+    }
+
+    fn user_agent(&self) -> Arc<str> {
+        self.user_agent.read().unwrap().clone()
     }
 
     fn proxy_raw(&self) -> String {
@@ -227,8 +233,8 @@ enum StreamTitle { NoMetadata, Unchanged, Title(String) }
 /// The stream's song title and bitrate ("128", "~173" for VBR; empty when
 /// unknown). The bitrate is measured from the audio frames; icy-br is only
 /// used when no frames are recognised.
-async fn stream_title(url: &str, proxy: Option<&Proxy>) -> std::io::Result<(StreamTitle, String)> {
-    let mut resp = http::get(url, proxy, &[("Icy-MetaData", "1")]).await?;
+async fn stream_title(url: &str, proxy: Option<&Proxy>, agent: &str) -> std::io::Result<(StreamTitle, String)> {
+    let mut resp = http::get(url, proxy, agent, &[("Icy-MetaData", "1")]).await?;
     if !(200..300).contains(&resp.status) {
         return Err(http::err(format!("stream returned {}", resp.status)));
     }
@@ -371,7 +377,7 @@ fn publish_metadata(app: &App, url: &str, title: StreamTitle, bitrate: Option<&s
 async fn refresh_station(app: &App, list: &[Station], k: usize) {
     let st = &list[k];
     let proxy = app.proxy_for(st);
-    match timeout(Duration::from_secs(10), stream_title(&st.url, proxy.as_deref())).await {
+    match timeout(Duration::from_secs(10), stream_title(&st.url, proxy.as_deref(), &app.user_agent())).await {
         Ok(Ok((title, br))) => publish_metadata(app, &st.url, title, Some(&br)),
         Ok(Err(e)) => eprintln!("title of {}: {e}", st.name),
         Err(_) => eprintln!("title of {}: timed out", st.name),
@@ -382,7 +388,7 @@ async fn refresh_station(app: &App, list: &[Station], k: usize) {
 fn refresh_async(app: &Shared, list: &Arc<Vec<Station>>, k: usize) {
     let Some(st) = list.get(k) else { return };
     let proxy = app.proxy_for(st);
-    let key = RelayKey::new(st, proxy);
+    let key = RelayKey::new(st, proxy, app.user_agent());
     if app.relays.lock().unwrap().contains_key(&key) || app.opening.lock().unwrap().contains_key(&key) {
         return;
     }
@@ -516,6 +522,7 @@ async fn save_station_list(app: &App, list: Vec<Station>) -> Result<stations::Se
     let settings = stations::Settings {
         stations: list,
         proxy: app.proxy_raw(),
+        user_agent: app.user_agent().to_string(),
         password: String::new(),
         autoplay: app.autoplay.load(Ordering::Relaxed),
         random_start: app.random_start.load(Ordering::Relaxed),
@@ -928,7 +935,7 @@ async fn station_stream(State(app): State<Shared>, Path(index): Path<String>) ->
         return StatusCode::NOT_FOUND.into_response();
     };
     let proxy = app.proxy_for(st);
-    let key = RelayKey::new(st, proxy);
+    let key = RelayKey::new(st, proxy, app.user_agent());
     loop {
         if let Some(relay) = app.relays.lock().unwrap().get(&key) {
             return relay_response(&app, key.clone(), relay.clone());
@@ -976,7 +983,7 @@ impl Drop for Opening<'_> {
 
 async fn open_relay(app: &Shared, key: &RelayKey, st: &Station) -> (Response, OpenResult) {
     // Short enough that the player moves on quickly from a dead station.
-    let resp = match timeout(Duration::from_secs(10), http::get(&st.url, key.proxy.as_deref(), &[("Icy-MetaData", "1")])).await {
+    let resp = match timeout(Duration::from_secs(10), http::get(&st.url, key.proxy.as_deref(), &key.user_agent, &[("Icy-MetaData", "1")])).await {
         Ok(Ok(r)) if (200..300).contains(&r.status) => r,
         Ok(Ok(r)) => {
             eprintln!("{}: server answered {}", st.name, r.status_text);
@@ -1055,6 +1062,7 @@ struct StationJson {
 
 #[derive(Serialize, Deserialize)]
 struct ConfigJson {
+    user_agent: Option<String>,
     #[serde(default)]
     proxy: String,
     autoplay: bool,
@@ -1101,6 +1109,7 @@ fn config_json(app: &App) -> ConfigJson {
     let list = app.stations();
     ConfigJson {
         proxy: mask_proxy(&app.proxy_raw()),
+        user_agent: Some(app.user_agent().to_string()),
         autoplay: app.autoplay.load(Ordering::Relaxed),
         random_start: app.random_start.load(Ordering::Relaxed),
         random: app.random.load(Ordering::Relaxed),
@@ -1189,7 +1198,12 @@ async fn apply_settings(app: Shared, input: ConfigJson) -> Response {
             Err(e) => return json_error(StatusCode::BAD_REQUEST, e),
         }
     };
-    let settings = stations::Settings { stations: list, proxy: raw, password: String::new(), autoplay: input.autoplay,
+    let current_agent = app.user_agent();
+    let user_agent = match http::user_agent(input.user_agent.as_deref().unwrap_or(&current_agent)) {
+        Ok(value) => value.to_string(),
+        Err(e) => return json_error(StatusCode::BAD_REQUEST, e),
+    };
+    let settings = stations::Settings { user_agent, stations: list, proxy: raw, password: String::new(), autoplay: input.autoplay,
         random_start: input.random_start,
         random: input.random,
         retries: input.retries.min(stations::MAX_RETRIES),
@@ -1202,7 +1216,8 @@ async fn apply_settings(app: Shared, input: ConfigJson) -> Response {
         }
     };
     let has_proxy = parsed.is_some();
-    let stations::Settings { stations: list, proxy: raw, autoplay, random_start, random, retries, .. } = settings;
+    let stations::Settings { stations: list, proxy: raw, autoplay, random_start, random, retries, user_agent, .. } = settings;
+    *app.user_agent.write().unwrap() = Arc::from(user_agent);
     app.retries.store(retries as usize, Ordering::Relaxed);
     app.autoplay.store(autoplay, Ordering::Relaxed);
     app.random_start.store(random_start, Ordering::Relaxed);
@@ -1265,6 +1280,7 @@ fn remap_sessions(app: &App, old: &[Station], cur: &[Station], had_proxy: bool) 
 
 #[derive(Deserialize)]
 struct CheckReq {
+    user_agent: Option<String>,
     #[serde(default)]
     url: String,
     #[serde(default, rename = "useProxy")]
@@ -1294,12 +1310,12 @@ fn check_error(msg: impl Into<String>) -> CheckResult {
 }
 
 /// Connects to a stream and reads a little audio to see if it plays.
-async fn check_stream(url: &str, proxy: Option<&Proxy>) -> CheckResult {
+async fn check_stream(url: &str, proxy: Option<&Proxy>, agent: &str) -> CheckResult {
     if !http::is_stream_url(url) {
         return check_error("URL must start with http:// or https://");
     }
     let deadline = Instant::now() + Duration::from_secs(15);
-    let mut resp = match timeout_at(deadline, http::get(url, proxy, &[])).await {
+    let mut resp = match timeout_at(deadline, http::get(url, proxy, agent, &[])).await {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => return check_error(e.to_string()),
         Err(_) => return check_error("no answer within 15 s"),
@@ -1372,7 +1388,8 @@ async fn settings_check(State(app): State<Shared>, headers: HeaderMap, body: Byt
     } else {
         None
     };
-    Json(check_stream(&req.url, proxy.as_ref()).await).into_response()
+    let current_agent = app.user_agent();
+    Json(check_stream(&req.url, proxy.as_ref(), req.user_agent.as_deref().unwrap_or(&current_agent)).await).into_response()
 }
 
 // ---------------------------------------------------------------- main
@@ -1464,7 +1481,7 @@ fn main() {
         Ok(false) => {}
         Err(e) => fail(format!("Cannot create {stations_file}: {e}")),
     }
-    let stations::Settings { stations: list, proxy: proxy_raw, password, autoplay, random_start, random, retries } =
+    let stations::Settings { stations: list, proxy: proxy_raw, password, autoplay, random_start, random, retries, user_agent } =
         stations::load(&stations_file).unwrap_or_else(|e| fail(format!("Cannot read {stations_file}: {e}")));
     if list.is_empty() {
         fail(format!("No stations found in {stations_file}"));
@@ -1484,6 +1501,7 @@ fn main() {
         autoplay: std::sync::atomic::AtomicBool::new(autoplay),
         random_start: std::sync::atomic::AtomicBool::new(random_start),
         random: std::sync::atomic::AtomicBool::new(random),
+        user_agent: RwLock::new(Arc::from(http::user_agent(&user_agent).unwrap_or_else(|e| fail(e)))),
         retries: AtomicUsize::new(retries as usize),
         stations_file,
         sessions: Mutex::new(HashMap::new()),
@@ -1586,7 +1604,7 @@ mod tests {
                 sock.write_all(&body).await.unwrap();
                 sock.shutdown().await.unwrap();
             });
-            let resp = http::get(&format!("http://{addr}/"), None, &[]).await.unwrap();
+            let resp = http::get(&format!("http://{addr}/"), None, http::DEFAULT_USER_AGENT, &[]).await.unwrap();
             let mut decoder = IcyReader::new(resp.body, Some(4));
             let mut audio: Vec<u8> = Vec::new();
             let mut titles = Vec::new();
