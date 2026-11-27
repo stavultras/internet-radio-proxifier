@@ -9,14 +9,20 @@ use rustls::pki_types::{CertificateDer, ServerName, pem::PemObject};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
-// Some stream hosts (e.g. SomaFM) reject unknown clients without a User-Agent.
-pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:161.0) Gecko/20100101 Firefox/161.0";
+// Some stream hosts (e.g. SomaFM) reject unknown clients without a User-Agent;
+// a player UA also keeps Shoutcast-style servers from serving their web page.
+pub const DEFAULT_USER_AGENT: &str = "WinampMPEG/5.8";
 
-pub fn user_agent(value: &str) -> Result<&str, &'static str> {
+/// Checks a saved User-Agent override; "" means "use the built-in default".
+pub fn validate_user_agent(value: &str) -> Result<&str, &'static str> {
     if !value.bytes().all(|b| (b' '..=b'~').contains(&b)) {
         return Err("User Agent must contain only printable ASCII characters");
     }
-    let value = value.trim();
+    Ok(value.trim())
+}
+
+pub fn user_agent(value: &str) -> Result<&str, &'static str> {
+    let value = validate_user_agent(value)?;
     Ok(if value.is_empty() { DEFAULT_USER_AGENT } else { value })
 }
 
@@ -623,6 +629,18 @@ mod tests {
         assert_eq!(Proxy::parse("socks5h://guest:pw@").unwrap_err(), "proxy needs a host, e.g. socks5://192.168.1.10:1080");
         assert!(Proxy::parse("ftp://x").unwrap_err().starts_with("proxy must start"));
         assert!(Proxy::parse("192.168.1.10:1080").unwrap_err().starts_with("proxy must start"));
+    }
+
+    #[test]
+    fn user_agents() {
+        assert_eq!(user_agent("").unwrap(), DEFAULT_USER_AGENT);
+        assert_eq!(user_agent("   ").unwrap(), DEFAULT_USER_AGENT);
+        assert_eq!(user_agent(" WinampMPEG/5.8 ").unwrap(), "WinampMPEG/5.8");
+        assert!(user_agent("bad\r\nX: 1").is_err());
+        assert!(user_agent("Café").is_err());
+        assert_eq!(validate_user_agent("").unwrap(), "");
+        assert_eq!(validate_user_agent(" My Radio/1.0 ").unwrap(), "My Radio/1.0");
+        assert!(validate_user_agent("Café").is_err());
     }
 
     #[test]

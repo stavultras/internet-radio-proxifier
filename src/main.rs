@@ -92,6 +92,7 @@ struct App {
     random: std::sync::atomic::AtomicBool,
     /// Reconnects to a station that stopped, before the player skips it.
     retries: AtomicUsize,
+    /// User-Agent override; empty uses the built-in default.
     user_agent: RwLock<Arc<str>>,
     stations_file: String,
     sessions: Mutex<HashMap<u64, Session>>,
@@ -133,6 +134,11 @@ impl App {
     }
 
     fn user_agent(&self) -> Arc<str> {
+        let raw = self.user_agent_override();
+        if raw.is_empty() { Arc::from(http::DEFAULT_USER_AGENT) } else { raw }
+    }
+
+    fn user_agent_override(&self) -> Arc<str> {
         self.user_agent.read().unwrap().clone()
     }
 
@@ -522,7 +528,7 @@ async fn save_station_list(app: &App, list: Vec<Station>) -> Result<stations::Se
     let settings = stations::Settings {
         stations: list,
         proxy: app.proxy_raw(),
-        user_agent: app.user_agent().to_string(),
+        user_agent: app.user_agent_override().to_string(),
         password: String::new(),
         autoplay: app.autoplay.load(Ordering::Relaxed),
         random_start: app.random_start.load(Ordering::Relaxed),
@@ -1109,7 +1115,7 @@ fn config_json(app: &App) -> ConfigJson {
     let list = app.stations();
     ConfigJson {
         proxy: mask_proxy(&app.proxy_raw()),
-        user_agent: Some(app.user_agent().to_string()),
+        user_agent: Some(app.user_agent_override().to_string()),
         autoplay: app.autoplay.load(Ordering::Relaxed),
         random_start: app.random_start.load(Ordering::Relaxed),
         random: app.random.load(Ordering::Relaxed),
@@ -1155,7 +1161,7 @@ async fn settings_page(State(app): State<Shared>, headers: HeaderMap) -> Respons
     if let Err(r) = check_auth(&app, &headers).await {
         return r;
     }
-    Html(SETTINGS).into_response()
+    Html(SETTINGS.replace("{{user_agent_default}}", &esc(http::DEFAULT_USER_AGENT))).into_response()
 }
 
 async fn settings_get(State(app): State<Shared>, headers: HeaderMap) -> Response {
@@ -1198,8 +1204,8 @@ async fn apply_settings(app: Shared, input: ConfigJson) -> Response {
             Err(e) => return json_error(StatusCode::BAD_REQUEST, e),
         }
     };
-    let current_agent = app.user_agent();
-    let user_agent = match http::user_agent(input.user_agent.as_deref().unwrap_or(&current_agent)) {
+    let current_agent = app.user_agent_override();
+    let user_agent = match http::validate_user_agent(input.user_agent.as_deref().unwrap_or(&current_agent)) {
         Ok(value) => value.to_string(),
         Err(e) => return json_error(StatusCode::BAD_REQUEST, e),
     };
@@ -1501,7 +1507,7 @@ fn main() {
         autoplay: std::sync::atomic::AtomicBool::new(autoplay),
         random_start: std::sync::atomic::AtomicBool::new(random_start),
         random: std::sync::atomic::AtomicBool::new(random),
-        user_agent: RwLock::new(Arc::from(http::user_agent(&user_agent).unwrap_or_else(|e| fail(e)))),
+        user_agent: RwLock::new(Arc::from(http::validate_user_agent(&user_agent).unwrap_or_else(|e| fail(e)))),
         retries: AtomicUsize::new(retries as usize),
         stations_file,
         sessions: Mutex::new(HashMap::new()),
