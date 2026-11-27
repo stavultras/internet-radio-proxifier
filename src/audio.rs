@@ -1,13 +1,34 @@
 //! The real bitrate of a stream, read from its own audio frames (MP3 frame
 //! headers, AAC ADTS headers) instead of what the server claims in icy-br.
 
-/// Bitrate measured over a piece of a stream.
+/// The codec of a stream's frames: the two frame layouts this module can
+/// measure. Other stream formats (Ogg, Opus, FLAC) are named by their
+/// Content-Type, in `main.rs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Codec {
+    Mp3,
+    Aac,
+}
+
+impl Codec {
+    /// "MP3" or "AAC".
+    pub fn label(self) -> &'static str {
+        match self {
+            Codec::Mp3 => "MP3",
+            Codec::Aac => "AAC",
+        }
+    }
+}
+
+/// Bitrate and codec measured over a piece of a stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bitrate {
     /// Average kbps over the frames found.
     pub kbps: u32,
     /// The frames had different bitrates (VBR), so `kbps` is an average.
     pub variable: bool,
+    /// The codec of the frames.
+    pub codec: Codec,
 }
 
 impl Bitrate {
@@ -30,9 +51,9 @@ pub fn measure(data: &[u8]) -> Option<Bitrate> {
     }
 }
 
-/// Finds the longest run of chained frames. `frame` returns (length, bits,
-/// seconds, kbps) for a frame header at the start of the slice.
-fn chain(data: &[u8], frame: impl Fn(&[u8]) -> Option<(usize, f64, f64, u32)>) -> Option<(Bitrate, usize)> {
+/// Finds the longest run of chained frames of `codec`. `frame` returns
+/// (length, bits, seconds, kbps) for a frame header at the start of the slice.
+fn chain(data: &[u8], codec: Codec, frame: impl Fn(&[u8]) -> Option<(usize, f64, f64, u32)>) -> Option<(Bitrate, usize)> {
     let mut best: Option<(Bitrate, usize)> = None;
     let mut i = 0;
     while i < data.len() {
@@ -57,7 +78,7 @@ fn chain(data: &[u8], frame: impl Fn(&[u8]) -> Option<(usize, f64, f64, u32)>) -
         }
         if count >= MIN_FRAMES && best.is_none_or(|(_, n)| count > n) {
             let kbps = (bits / secs / 1000.0).round() as u32;
-            best = Some((Bitrate { kbps, variable }, count));
+            best = Some((Bitrate { kbps, variable, codec }, count));
         }
         i = if count >= MIN_FRAMES { j + 1 } else { i + 1 };
     }
@@ -68,7 +89,7 @@ fn chain(data: &[u8], frame: impl Fn(&[u8]) -> Option<(usize, f64, f64, u32)>) -
 fn mp3(data: &[u8]) -> Option<(Bitrate, usize)> {
     const V1: [u32; 15] = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
     const V2: [u32; 15] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
-    chain(data, |h| {
+    chain(data, Codec::Mp3, |h| {
         if h.len() < 4 || h[0] != 0xFF || h[1] & 0xE0 != 0xE0 {
             return None;
         }
@@ -93,7 +114,7 @@ fn mp3(data: &[u8]) -> Option<(Bitrate, usize)> {
 /// header carries the core rate).
 fn adts(data: &[u8]) -> Option<(Bitrate, usize)> {
     const RATES: [u32; 12] = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000];
-    chain(data, |h| {
+    chain(data, Codec::Aac, |h| {
         if h.len() < 7 || h[0] != 0xFF || h[1] & 0xF6 != 0xF0 {
             return None;
         }
@@ -150,7 +171,7 @@ mod tests {
     fn mp3_cbr() {
         let mut data = vec![0xAB; 100]; // joined in the middle of a frame
         data.extend(mp3_frames(&[128; 30]));
-        assert_eq!(measure(&data), Some(Bitrate { kbps: 128, variable: false }));
+        assert_eq!(measure(&data), Some(Bitrate { kbps: 128, variable: false, codec: Codec::Mp3 }));
         assert_eq!(measure(&data).unwrap().label(), "128");
     }
 
@@ -161,13 +182,15 @@ mod tests {
         assert!(b.variable);
         assert!((160..=185).contains(&b.kbps), "{b:?}");
         assert!(b.label().starts_with('~'));
+        assert_eq!(b.codec.label(), "MP3");
     }
 
     #[test]
     fn aac() {
         // 418 bytes per 1024 samples at 44.1 kHz = 144 kbps
         let b = measure(&adts_frames(418, 30)).unwrap();
-        assert_eq!(b, Bitrate { kbps: 144, variable: false });
+        assert_eq!(b, Bitrate { kbps: 144, variable: false, codec: Codec::Aac });
+        assert_eq!(b.codec.label(), "AAC");
     }
 
     #[test]

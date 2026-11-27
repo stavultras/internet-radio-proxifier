@@ -49,10 +49,12 @@ and has since been rewritten in Rust.
   Previous, then the other stations, each in the order of the settings file.
   The numbers do not change
 - The top corners of the player show **PROXY** when the station plays through
-  the proxy, and the bitrate. The bitrate is measured from the audio itself
-  (MP3 and AAC frames), not taken from what the station claims; `~173 kbps`
-  means a variable bitrate (average). Other formats show the station's
-  `icy-br` if it sends one
+  the proxy, and the bitrate with the format (`320 kbps / MP3`,
+  `192 kbps / AAC`).
+  The bitrate is measured from the audio itself (MP3 and AAC frames), not
+  taken from what the station claims; `~173 kbps` means a variable bitrate
+  (average). For other formats (Ogg, Opus, FLAC) the format comes from the
+  stream's Content-Type and the bitrate from its `icy-br` if it sends one
 - The status line shows what is going on: connecting, playing, buffering,
   a station that dropped and is reconnecting, a station that is unavailable
   and skipped

@@ -103,6 +103,8 @@ struct App {
     titles: Mutex<HashMap<String, Arc<str>>>,
     /// Last known bitrate ("128") per stream URL, from icy-br.
     bitrates: Mutex<HashMap<String, Arc<str>>>,
+    /// Last known format ("MP3", "AAC") per stream URL.
+    formats: Mutex<HashMap<String, Arc<str>>>,
     /// Stream URLs with a title fetch running.
     inflight: Mutex<HashSet<String>>,
     bitrate_only_until: Mutex<HashMap<String, Instant>>,
@@ -171,7 +173,7 @@ impl App {
         )
     }
 
-    /// Station name, song title and the corner marks (proxy, bitrate).
+    /// Station name, song title and the corner marks (proxy, format, bitrate).
     /// Player box for station `i` (shown to people as number i + 1).
     fn info_html(&self, i: usize, st: &Station, title: &str) -> String {
         let proxy = if self.proxy_for(st).is_some() {
@@ -179,8 +181,15 @@ impl App {
         } else {
             "<span></span>"
         };
-        let br = self.bitrates.lock().unwrap().get(&st.url).cloned().unwrap_or_default();
-        let br = if br.is_empty() { String::new() } else { format!("{} kbps", esc(&br)) };
+        let kbps = self.bitrates.lock().unwrap().get(&st.url).cloned().unwrap_or_default();
+        let format = self.formats.lock().unwrap().get(&st.url).cloned().unwrap_or_default();
+        // "320 kbps / MP3", "320 kbps" or "MP3"; empty until measured.
+        let br = match (format.is_empty(), kbps.is_empty()) {
+            (true, true) => String::new(),
+            (true, false) => format!("{} kbps", esc(&kbps)),
+            (false, true) => esc(&format),
+            (false, false) => format!("{} kbps / {}", esc(&kbps), esc(&format)),
+        };
         let fav = if st.favorite {
             r#"<button id="station-fav" type="button" aria-pressed="true" title="Remove from favorites">&#x2605;</button>"#
         } else {
@@ -236,36 +245,54 @@ const MEASURE_BYTES: usize = 32 * 1024;
 
 enum StreamTitle { NoMetadata, Unchanged, Title(String) }
 
-/// The stream's song title and bitrate ("128", "~173" for VBR; empty when
-/// unknown). The bitrate is measured from the audio frames; icy-br is only
-/// used when no frames are recognised.
-async fn stream_title(url: &str, proxy: Option<&Proxy>, agent: &str) -> std::io::Result<(StreamTitle, String)> {
+/// Bitrate and format of a stream: what its frames show, or what its headers
+/// claim when no frames were recognised.
+#[derive(Clone)]
+struct StreamMeta {
+    /// "128", "~173"; empty when unknown.
+    bitrate: String,
+    /// "MP3", "AAC", "Ogg"; empty when unknown.
+    format: &'static str,
+}
+
+/// The frames are authoritative: some servers send AAC with `audio/mpeg`.
+fn measured_meta(audio: &[u8], claimed: &StreamMeta) -> StreamMeta {
+    match audio::measure(audio) {
+        Some(b) => StreamMeta { bitrate: b.label(), format: b.codec.label() },
+        None => claimed.clone(),
+    }
+}
+
+/// The stream's song title, bitrate ("128", "~173" for VBR) and format. The
+/// bitrate is measured from the audio frames; icy-br and the Content-Type are
+/// only used when no frames are recognised.
+async fn stream_title(url: &str, proxy: Option<&Proxy>, agent: &str) -> std::io::Result<(StreamTitle, StreamMeta)> {
     let mut resp = http::get(url, proxy, agent, &[("Icy-MetaData", "1")]).await?;
     if !(200..300).contains(&resp.status) {
         return Err(http::err(format!("stream returned {}", resp.status)));
     }
     let icy = bitrate(resp.header("icy-br"), resp.header("ice-audio-info"));
-    let measured = |audio: &[u8]| audio::measure(audio).map(|b| b.label()).unwrap_or_else(|| icy.clone());
+    let claimed = StreamMeta { bitrate: icy.clone(), format: format_from_content_type(resp.header("content-type").unwrap_or("")) };
     // A stream without ICY metadata has no title, only the bitrate.
     let Some(metaint) = resp.header("icy-metaint").and_then(|v| v.trim().parse::<usize>().ok()) else {
         let mut audio = vec![0u8; MEASURE_BYTES];
-        let br = match resp.body.read_full(&mut audio).await {
-            Ok(()) => measured(&audio),
-            Err(_) if !icy.is_empty() => icy,
+        let meta = match resp.body.read_full(&mut audio).await {
+            Ok(()) => measured_meta(&audio, &claimed),
+            Err(_) if !icy.is_empty() => claimed,
             Err(e) => return Err(e),
         };
-        return Ok((StreamTitle::NoMetadata, br));
+        return Ok((StreamTitle::NoMetadata, meta));
     };
     // The audio before the first metadata block, kept to measure the bitrate.
     let mut audio = vec![0u8; metaint.min(64 * 1024)];
     resp.body.read_full(&mut audio).await?;
     resp.body.skip(metaint - audio.len()).await?;
-    let br = measured(&audio);
+    let meta = measured_meta(&audio, &claimed);
     let mut len = [0u8];
     resp.body.read_full(&mut len).await?;
-    let mut meta = vec![0u8; len[0] as usize * 16];
-    resp.body.read_full(&mut meta).await?;
-    Ok((icy_title(&meta).map_or(StreamTitle::Unchanged, StreamTitle::Title), br))
+    let mut meta_block = vec![0u8; len[0] as usize * 16];
+    resp.body.read_full(&mut meta_block).await?;
+    Ok((icy_title(&meta_block).map_or(StreamTitle::Unchanged, StreamTitle::Title), meta))
 }
 
 /// kbps from icy-br ("128", some servers send "128,128") or, failing that,
@@ -284,6 +311,26 @@ fn bitrate(icy_br: Option<&str>, audio_info: Option<&str>) -> String {
             })
         })
         .unwrap_or_default()
+}
+
+/// "MP3", "AAC", "Ogg", "Opus" or "FLAC" from a Content-Type; empty when the
+/// type does not name a known audio format. Only a fallback: MP3 and AAC are
+/// recognised from their frames, which some servers label wrongly.
+fn format_from_content_type(content_type: &str) -> &'static str {
+    let mime = content_type.split(';').next().unwrap_or("").trim();
+    const FORMATS: [(&str, &str); 10] = [
+        ("audio/mpeg", "MP3"),
+        ("audio/mp3", "MP3"),
+        ("audio/aac", "AAC"),
+        ("audio/aacp", "AAC"),
+        ("audio/x-aac", "AAC"),
+        ("audio/ogg", "Ogg"),
+        ("application/ogg", "Ogg"),
+        ("audio/opus", "Opus"),
+        ("audio/flac", "FLAC"),
+        ("audio/x-flac", "FLAC"),
+    ];
+    FORMATS.iter().find(|(name, _)| mime.eq_ignore_ascii_case(name)).map_or("", |(_, label)| *label)
 }
 
 /// ICY metadata has no declared charset: many stations send UTF-8, older
@@ -340,6 +387,7 @@ fn prune_metadata_caches(app: &App, list: &[Station]) {
     let urls: HashSet<&str> = list.iter().map(|st| st.url.as_str()).collect();
     app.titles.lock().unwrap().retain(|url, _| urls.contains(url.as_str()));
     app.bitrates.lock().unwrap().retain(|url, _| urls.contains(url.as_str()));
+    app.formats.lock().unwrap().retain(|url, _| urls.contains(url.as_str()));
     app.bitrate_only_until.lock().unwrap().retain(|url, _| urls.contains(url.as_str()));
 }
 
@@ -361,11 +409,12 @@ fn update_cached_value(cache: &Mutex<HashMap<String, Arc<str>>>, url: &str, valu
     true
 }
 
-fn publish_metadata(app: &App, url: &str, title: StreamTitle, bitrate: Option<&str>) {
+fn publish_metadata(app: &App, url: &str, title: StreamTitle, bitrate: Option<&str>, format: Option<&str>) {
     if !stream_is_current(app, url) {
         return;
     }
     let bitrate_changed = bitrate.is_some_and(|br| update_cached_value(&app.bitrates, url, br));
+    let format_changed = format.is_some_and(|f| update_cached_value(&app.formats, url, f));
     let title_changed = match title {
         StreamTitle::NoMetadata => {
             app.bitrate_only_until.lock().unwrap().insert(url.to_string(), Instant::now() + BITRATE_ONLY_INTERVAL);
@@ -374,7 +423,7 @@ fn publish_metadata(app: &App, url: &str, title: StreamTitle, bitrate: Option<&s
         StreamTitle::Unchanged => false,
         StreamTitle::Title(title) => update_cached_value(&app.titles, url, &stations::clean_title(&title)),
     };
-    if title_changed || bitrate_changed {
+    if title_changed || bitrate_changed || format_changed {
         broadcast_stream_info(app, url, &app.cached_title(url));
     }
 }
@@ -384,7 +433,7 @@ async fn refresh_station(app: &App, list: &[Station], k: usize) {
     let st = &list[k];
     let proxy = app.proxy_for(st);
     match timeout(Duration::from_secs(10), stream_title(&st.url, proxy.as_deref(), &app.user_agent())).await {
-        Ok(Ok((title, br))) => publish_metadata(app, &st.url, title, Some(&br)),
+        Ok(Ok((title, meta))) => publish_metadata(app, &st.url, title, Some(&meta.bitrate), Some(meta.format)),
         Ok(Err(e)) => eprintln!("title of {}: {e}", st.name),
         Err(_) => eprintln!("title of {}: timed out", st.name),
     }
@@ -870,10 +919,13 @@ async fn send_audio(relay: &Relay, bytes: Bytes) -> bool {
     }
 }
 
-fn publish_relay_bitrate(app: &App, key: &RelayKey, audio: &[u8], icy: &str, has_metadata: bool) {
-    let br = audio::measure(audio).map(|b| b.label()).unwrap_or_else(|| icy.to_string());
+fn publish_relay_bitrate(app: &App, key: &RelayKey, content_type: &str, audio: &[u8], icy: &str, has_metadata: bool) {
+    let (br, format) = match audio::measure(audio) {
+        Some(b) => (b.label(), b.codec.label()),
+        None => (icy.to_string(), format_from_content_type(content_type)),
+    };
     let title = if has_metadata { StreamTitle::Unchanged } else { StreamTitle::NoMetadata };
-    publish_metadata(app, &key.url, title, Some(&br));
+    publish_metadata(app, &key.url, title, Some(&br), Some(format));
 }
 
 async fn relay_loop(app: Shared, key: RelayKey, relay: Arc<Relay>, mut decoder: IcyReader, icy: String) {
@@ -898,7 +950,7 @@ async fn relay_loop(app: Shared, key: RelayKey, relay: Arc<Relay>, mut decoder: 
                     audio.extend_from_slice(&buf[..take]);
                     if audio.len() == MEASURE_BYTES {
                         measured = true;
-                        publish_relay_bitrate(&app, &key, &audio, &icy, has_metadata);
+                        publish_relay_bitrate(&app, &key, &relay.content_type, &audio, &icy, has_metadata);
                     }
                 }
                 buf.truncate(n);
@@ -909,14 +961,14 @@ async fn relay_loop(app: Shared, key: RelayKey, relay: Arc<Relay>, mut decoder: 
                 buf = vec![0u8; 16 * 1024];
             }
             Ok(RelayRead::Title(title)) => {
-                publish_metadata(&app, &key.url, StreamTitle::Title(title), None);
+                publish_metadata(&app, &key.url, StreamTitle::Title(title), None, None);
             }
             Ok(RelayRead::Eof) => break Ok(()),
             Err(e) => break Err(e),
         }
     };
     if !measured && result.is_ok() {
-        publish_relay_bitrate(&app, &key, &audio, &icy, has_metadata);
+        publish_relay_bitrate(&app, &key, &relay.content_type, &audio, &icy, has_metadata);
     }
     let mut relays = app.relays.lock().unwrap();
     if relays.get(&key).is_some_and(|current| Arc::ptr_eq(current, &relay)) {
@@ -1515,6 +1567,7 @@ fn main() {
         opening: Mutex::new(HashMap::new()),
         titles: Mutex::new(HashMap::new()),
         bitrates: Mutex::new(HashMap::new()),
+        formats: Mutex::new(HashMap::new()),
         inflight: Mutex::new(HashSet::new()),
         bitrate_only_until: Mutex::new(HashMap::new()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -1579,6 +1632,18 @@ mod tests {
         assert_eq!(decode_title("Wölli – Bühne".as_bytes()), "Wölli – Bühne");
         assert_eq!(decode_title(b"W\xf6lli Und Die Band Des Jahres"), "Wölli Und Die Band Des Jahres");
         assert_eq!(decode_title(b"Rock \x96 Caf\xe9 \x93Live\x94"), "Rock – Café “Live”");
+    }
+
+    #[test]
+    fn formats_from_content_type() {
+        assert_eq!(format_from_content_type("audio/mpeg"), "MP3");
+        assert_eq!(format_from_content_type("Audio/AAC; charset=binary"), "AAC");
+        assert_eq!(format_from_content_type("audio/aacp"), "AAC");
+        assert_eq!(format_from_content_type("audio/ogg"), "Ogg");
+        assert_eq!(format_from_content_type("audio/opus"), "Opus");
+        assert_eq!(format_from_content_type("audio/x-flac"), "FLAC");
+        assert_eq!(format_from_content_type("application/octet-stream"), "");
+        assert_eq!(format_from_content_type(""), "");
     }
 
     #[test]

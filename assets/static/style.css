@@ -407,7 +407,7 @@ body.needs-gesture #play-pause-button {
 }
 
 /* Corner marks in the player box: "proxy" top left when the station plays
-   through the proxy, the bitrate top right. */
+   through the proxy, the format and bitrate top right. */
 .mainbox { position: relative; padding-top: 34px; }
 #station-tags {
 	position: absolute;
