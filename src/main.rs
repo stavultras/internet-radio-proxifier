@@ -2,8 +2,8 @@
 //! with a station manager and an optional proxy per station.
 //!
 //! Usage: internet-radio-proxifier -a ADDRESS -p PORT [-c SETTINGS_FILE]
-//! The settings file holds the proxy, the station list and the settings
-//! page password.
+//! The settings file holds the proxy, the station list and the password
+//! for the player and settings pages.
 
 mod audio;
 mod http;
@@ -571,8 +571,8 @@ async fn handle_ws_message(app: &Shared, id: u64, text: &str) {
     refresh_async(app, &list, station);
 }
 
-/// Writes `list` with the current options. The settings page password is
-/// re-read from the file: it can only be set by editing the file.
+/// Writes `list` with the current options. The password is re-read from
+/// the file: it can only be set by editing the file.
 async fn save_station_list(app: &App, list: Vec<Station>) -> Result<stations::Settings, String> {
     let settings = stations::Settings {
         stations: list,
@@ -675,7 +675,10 @@ async fn ws_client(app: Shared, mut sock: WebSocket) {
     app.sessions.lock().unwrap().remove(&id);
 }
 
-async fn ws(State(app): State<Shared>, upgrade: WebSocketUpgrade) -> Response {
+async fn ws(State(app): State<Shared>, headers: HeaderMap, upgrade: WebSocketUpgrade) -> Response {
+    if let Err(r) = check_auth(&app, &headers).await {
+        return r;
+    }
     upgrade.on_upgrade(move |sock| ws_client(app, sock))
 }
 
@@ -749,7 +752,10 @@ async fn static_file(Path(path): Path<String>, headers: HeaderMap) -> Response {
     serve_asset(&path, &headers)
 }
 
-async fn index(State(app): State<Shared>) -> Html<String> {
+async fn index(State(app): State<Shared>, headers: HeaderMap) -> Response {
+    if let Err(r) = check_auth(&app, &headers).await {
+        return r;
+    }
     let autoplay = match (app.autoplay.load(Ordering::Relaxed), app.random_start.load(Ordering::Relaxed)) {
         (true, true) => "autoplay data-autoplay data-random-start",
         (true, false) => "autoplay data-autoplay",
@@ -758,7 +764,7 @@ async fn index(State(app): State<Shared>) -> Html<String> {
     let attrs = format!("{autoplay} data-retries=\"{}\"", app.retries.load(Ordering::Relaxed));
     let list = app.stations();
     let source = list.first().map(|st| App::player_html(0, st, list.len())).unwrap_or_default();
-    Html(INDEX.replace("{{autoplay}}", &attrs).replace("{{source}}", &source))
+    Html(INDEX.replace("{{autoplay}}", &attrs).replace("{{source}}", &source)).into_response()
 }
 
 #[derive(Serialize)]
@@ -770,7 +776,10 @@ struct PickerEntry<'a> {
     favorite: bool,
 }
 
-async fn api_stations(State(app): State<Shared>) -> Response {
+async fn api_stations(State(app): State<Shared>, headers: HeaderMap) -> Response {
+    if let Err(r) = check_auth(&app, &headers).await {
+        return r;
+    }
     let list = app.stations();
     // In play order: favorites first.
     let out: Vec<PickerEntry> = stations::play_order(&list)
@@ -786,10 +795,13 @@ struct RemoveReq {
     name: String,
 }
 
-/// Removes a station from the picker. Like the favorite star it works without
-/// the settings page password: the player is the open page. A JSON body means
+/// Removes a station from the picker. Like the favorite star it needs the
+/// same password as the settings page when one is set. A JSON body means
 /// a cross-site form cannot trigger it.
-async fn api_remove_station(State(app): State<Shared>, body: Bytes) -> Response {
+async fn api_remove_station(State(app): State<Shared>, headers: HeaderMap, body: Bytes) -> Response {
+    if let Err(r) = check_auth(&app, &headers).await {
+        return r;
+    }
     let Ok(req) = serde_json::from_slice::<RemoveReq>(&body) else {
         return json_error(StatusCode::BAD_REQUEST, "invalid JSON");
     };
@@ -986,7 +998,10 @@ async fn relay_loop(app: Shared, key: RelayKey, relay: Arc<Relay>, mut decoder: 
 }
 
 /// The stream of station `index`, shared by everyone listening to the same URL.
-async fn station_stream(State(app): State<Shared>, Path(index): Path<String>) -> Response {
+async fn station_stream(State(app): State<Shared>, Path(index): Path<String>, headers: HeaderMap) -> Response {
+    if let Err(r) = check_auth(&app, &headers).await {
+        return r;
+    }
     let list = app.stations();
     // /station/1 is the first station: the same numbers as in the player.
     let Some(st) = index.parse::<usize>().ok().and_then(|n| n.checked_sub(1)).and_then(|i| list.get(i)) else {
@@ -1183,6 +1198,8 @@ fn json_error(code: StatusCode, msg: impl Into<String>) -> Response {
     (code, Json(serde_json::json!({ "error": msg.into() }))).into_response()
 }
 
+/// Basic-auth gate for the player and settings pages (user name "admin").
+/// Without a password in the settings file everything stays open.
 async fn check_auth(app: &App, headers: &HeaderMap) -> Result<(), Response> {
     // Read from the file every time: it is changed only by editing the file,
     // and that takes effect without a restart. Keep disk I/O off the executor.
@@ -1459,6 +1476,25 @@ async fn no_cache(mut r: Response) -> Response {
     r
 }
 
+/// The player and settings pages need the password when one is set; the
+/// static assets stay open (they hold no user data, and the settings page
+/// has always loaded them without a password).
+fn router(app: Shared) -> Router {
+    Router::new()
+        .route("/", get(index))
+        .route("/api/stations", get(api_stations))
+        .route("/api/stations/remove", post(api_remove_station))
+        .route("/ws", get(ws))
+        .route("/static/{*path}", get(static_file))
+        .route("/sw.js", get(|headers: HeaderMap| async move { serve_asset("sw.js", &headers) }))
+        .route("/manifest.webmanifest", get(|headers: HeaderMap| async move { serve_asset("manifest.webmanifest", &headers) }))
+        .route("/settings", get(settings_page))
+        .route("/settings/api/stations", get(settings_get).put(settings_put))
+        .route("/settings/api/check", post(settings_check))
+        .route("/station/{index}", get(station_stream))
+        .layer(axum::middleware::map_response(no_cache)).with_state(app)
+}
+
 fn fail(msg: impl std::fmt::Display) -> ! {
     eprintln!("{msg}");
     std::process::exit(1)
@@ -1488,8 +1524,8 @@ fn usage() -> String {
   -h, --help             show this help
   -V, --version          show the version
 
-The settings file holds the proxy, the station list and the optional settings
-page password (password = ..., user name admin)."
+The settings file holds the proxy, the station list and the optional password
+for the player and settings pages (password = ..., user name admin)."
     )
 }
 
@@ -1550,7 +1586,7 @@ fn main() {
         Some(Arc::new(Proxy::parse(&proxy_raw).unwrap_or_else(|e| fail(e))))
     };
     if password.is_empty() {
-        eprintln!("Settings page has no password (no password = ... in {stations_file})");
+        eprintln!("Player and settings pages have no password (no password = ... in {stations_file})");
     }
 
     let app = Arc::new(App {
@@ -1574,19 +1610,7 @@ fn main() {
         next_id: AtomicUsize::new(1),
     });
 
-    let router = Router::new()
-        .route("/", get(index))
-        .route("/api/stations", get(api_stations))
-        .route("/api/stations/remove", post(api_remove_station))
-        .route("/ws", get(ws))
-        .route("/static/{*path}", get(static_file))
-        .route("/sw.js", get(|headers: HeaderMap| async move { serve_asset("sw.js", &headers) }))
-        .route("/manifest.webmanifest", get(|headers: HeaderMap| async move { serve_asset("manifest.webmanifest", &headers) }))
-        .route("/settings", get(settings_page))
-        .route("/settings/api/stations", get(settings_get).put(settings_put))
-        .route("/settings/api/check", post(settings_check))
-        .route("/station/{index}", get(station_stream))
-        .layer(axum::middleware::map_response(no_cache)).with_state(app.clone());
+    let router = router(app.clone());
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1754,5 +1778,164 @@ mod tests {
     #[test]
     fn escaping() {
         assert_eq!(esc(r#"<a href="x">&'"#), "&lt;a href=&#34;x&#34;&gt;&amp;&#39;");
+    }
+
+    /// An App with one station, reading its password from a real file.
+    fn test_app(stations_file: &str, url: &str) -> Shared {
+        let list = vec![Station { name: "Test Station".into(), url: url.into(), use_proxy: false, favorite: false }];
+        Arc::new(App {
+            stations: RwLock::new(Arc::new(list)),
+            proxy: RwLock::new((String::new(), None)),
+            autoplay: std::sync::atomic::AtomicBool::new(true),
+            random_start: std::sync::atomic::AtomicBool::new(false),
+            random: std::sync::atomic::AtomicBool::new(false),
+            retries: AtomicUsize::new(3),
+            user_agent: RwLock::new(Arc::from("")),
+            stations_file: stations_file.into(),
+            sessions: Mutex::new(HashMap::new()),
+            relays: Mutex::new(HashMap::new()),
+            opening: Mutex::new(HashMap::new()),
+            titles: Mutex::new(HashMap::new()),
+            bitrates: Mutex::new(HashMap::new()),
+            formats: Mutex::new(HashMap::new()),
+            inflight: Mutex::new(HashSet::new()),
+            bitrate_only_until: Mutex::new(HashMap::new()),
+            save_lock: tokio::sync::Mutex::new(()),
+            next_id: AtomicUsize::new(1),
+        })
+    }
+
+    async fn test_server(app: Shared) -> (String, std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router(app)).await.unwrap() });
+        (format!("http://{addr}"), addr, server)
+    }
+
+    async fn get(base: &str, path: &str, auth: Option<&str>) -> http::Response {
+        let extra: Vec<(&str, &str)> = auth.map(|a| vec![("Authorization", a)]).unwrap_or_default();
+        http::get(&format!("{base}{path}"), None, http::DEFAULT_USER_AGENT, &extra).await.unwrap()
+    }
+
+    async fn body_text(resp: &mut http::Response) -> String {
+        let mut out = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = resp.body.read(&mut buf).await.unwrap();
+            if n == 0 { break; }
+            out.extend_from_slice(&buf[..n]);
+        }
+        String::from_utf8(out).unwrap()
+    }
+
+    /// A real WebSocket handshake (the HTTP client always sends Connection:
+    /// close, which the upgrade extractor rejects before the auth check).
+    async fn ws_status_line(addr: std::net::SocketAddr, auth: Option<&str>) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut req = format!(
+            "GET /ws HTTP/1.1\r\nHost: {addr}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\
+             Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n"
+        );
+        if let Some(a) = auth {
+            req += &format!("Authorization: {a}\r\n");
+        }
+        req += "\r\n";
+        sock.write_all(req.as_bytes()).await.unwrap();
+        let mut line = Vec::new();
+        let mut byte = [0u8; 1];
+        while !line.ends_with(b"\r\n") && line.len() < 64 {
+            if sock.read(&mut byte).await.unwrap() == 0 { break; }
+            line.push(byte[0]);
+        }
+        String::from_utf8_lossy(&line).trim_end().to_string()
+    }
+
+    #[test]
+    fn player_and_settings_need_the_password() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let dir = std::env::temp_dir().join(format!("radio-auth-pw-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let file = dir.join("settings.ini");
+            // A port nobody listens on: an authenticated stream request must
+            // reach the relay and fail with 502, not with 401.
+            let dead = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let url = format!("http://{}/stream", dead.local_addr().unwrap());
+            drop(dead);
+            std::fs::write(&file, format!("password = dummy\n\n[Test Station]\nurl = {url}\n")).unwrap();
+            let app = test_app(file.to_str().unwrap(), &url);
+            let (base, addr, server) = test_server(app.clone()).await;
+            let good = format!("Basic {}", http::base64(b"admin:dummy"));
+            let bad = format!("Basic {}", http::base64(b"admin:wrong"));
+
+            // Every player and settings route challenges without credentials,
+            // before looking at the station number or the request body.
+            for path in ["/", "/api/stations", "/station/1", "/station/0", "/station/99", "/settings", "/settings/api/stations"] {
+                let resp = get(&base, path, None).await;
+                assert_eq!(resp.status, 401, "{path}");
+                assert!(resp.header("www-authenticate").is_some_and(|v| v.starts_with("Basic")), "{path}");
+            }
+            assert_eq!(get(&base, "/", Some(&bad)).await.status, 401);
+            assert!(ws_status_line(addr, None).await.starts_with("HTTP/1.1 401"));
+            assert!(ws_status_line(addr, Some(&bad)).await.starts_with("HTTP/1.1 401"));
+            let resp = api_remove_station(State(app.clone()), HeaderMap::new(), Bytes::from_static(br#"{"name":"Test Station"}"#)).await;
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+            // With the password the player, the picker and the settings work.
+            let mut resp = get(&base, "/", Some(&good)).await;
+            assert_eq!(resp.status, 200);
+            assert!(body_text(&mut resp).await.contains("Internet Radio"));
+            let mut resp = get(&base, "/api/stations", Some(&good)).await;
+            assert_eq!(resp.status, 200);
+            assert!(body_text(&mut resp).await.contains("Test Station"));
+            assert_eq!(get(&base, "/settings", Some(&good)).await.status, 200);
+            assert!(ws_status_line(addr, Some(&good)).await.starts_with("HTTP/1.1 101"));
+            // Authenticated stream requests reach the relay (502: dead
+            // upstream); zero and out-of-range numbers still 404.
+            assert_eq!(get(&base, "/station/1", Some(&good)).await.status, 502);
+            assert_eq!(get(&base, "/station/0", Some(&good)).await.status, 404);
+            assert_eq!(get(&base, "/station/99", Some(&good)).await.status, 404);
+            // The remove API passes auth too; the last station stays protected.
+            let headers = HeaderMap::from_iter([(header::AUTHORIZATION, HeaderValue::from_str(&good).unwrap())]);
+            let resp = api_remove_station(State(app.clone()), headers, Bytes::from_static(br#"{"name":"Test Station"}"#)).await;
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+            // Static assets stay open: they hold no user data.
+            for path in ["/static/script.js", "/static/style.css", "/sw.js", "/manifest.webmanifest"] {
+                assert_eq!(get(&base, path, None).await.status, 200, "{path}");
+            }
+
+            server.abort();
+            std::fs::remove_dir_all(&dir).unwrap();
+        });
+    }
+
+    #[test]
+    fn open_without_password_until_one_is_set() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let dir = std::env::temp_dir().join(format!("radio-auth-open-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let file = dir.join("settings.ini");
+            let ini = "[Test Station]\nurl = http://127.0.0.1:1/stream\n";
+            std::fs::write(&file, ini).unwrap();
+            let app = test_app(file.to_str().unwrap(), "http://127.0.0.1:1/stream");
+            let (base, _addr, server) = test_server(app.clone()).await;
+            assert_eq!(get(&base, "/", None).await.status, 200);
+            assert_eq!(get(&base, "/api/stations", None).await.status, 200);
+            assert_eq!(get(&base, "/settings", None).await.status, 200);
+
+            // Setting a password takes effect without a restart: it is read
+            // from the file on every auth check.
+            std::fs::write(&file, format!("password = dummy\n\n{ini}")).unwrap();
+            assert_eq!(get(&base, "/", None).await.status, 401);
+            assert_eq!(get(&base, "/api/stations", None).await.status, 401);
+            let good = format!("Basic {}", http::base64(b"admin:dummy"));
+            assert_eq!(get(&base, "/", Some(&good)).await.status, 200);
+
+            server.abort();
+            std::fs::remove_dir_all(&dir).unwrap();
+        });
     }
 }

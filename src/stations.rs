@@ -1,6 +1,6 @@
 //! The settings file (INI):
 //!
-//!   password  = secret        (settings page password; user name "admin")
+//!   password  = secret        (player and settings password; user name "admin")
 //!   proxy_url = socks5h://user:pass@192.168.1.10:1080
 //!   autoplay  = true          (start playing when the player page opens)
 //!   random_start = false      (with autoplay: start with a random station)
@@ -57,7 +57,7 @@ pub struct Settings {
     pub proxy: String,
     /// User-Agent override, "" for the built-in default.
     pub user_agent: String,
-    /// Settings page password, "" for none.
+    /// Password for the player and settings pages, "" for none.
     pub password: String,
     /// Start playing as soon as the player page opens.
     pub autoplay: bool,

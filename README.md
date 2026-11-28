@@ -20,8 +20,8 @@ and has since been rewritten in Rust.
   player is doing
 - Keeps playing through short drops: a station that stops is reconnected a
   few times before the player moves on; stations that are down are skipped
-- Settings page to manage stations and options from the browser, protected
-  by a password if you set one
+- Settings page to manage stations and options from the browser; one
+  optional password protects both the player and the settings page
 - Works without internet access to anything but the stations themselves:
   everything the browser needs is built into the binary
 - Installable as an app (PWA); lock screen and headset controls (Media
@@ -31,7 +31,8 @@ and has since been rewritten in Rust.
 
 ## Player
 
-`http://ADDRESS:PORT/`
+`http://ADDRESS:PORT/` (user name `admin` and the `password` from the
+settings file, if one is set — the same password as for the settings page)
 
 - **Previous / Next station**, **Random station**, **Pause**
 - **All stations**: a list of all stations with a filter; the title shows how
@@ -42,7 +43,8 @@ and has since been rewritten in Rust.
 - Every station has a number, shown next to its name in the player, in the
   station list and on the settings page, so a station with a good song is easy
   to find again. `http://ADDRESS:PORT/station/N` is the stream of station N
-  (the same number), for other players such as VLC
+  (the same number), for other players such as VLC; with a password set, use
+  `http://admin:PASSWORD@ADDRESS:PORT/station/N`
 - **Favorites**: the star in the bottom right corner of the player marks the
   station as a favorite (saved in the settings file, so it is the same on
   every device). Favorites come first in **All stations** and in Next /
@@ -107,7 +109,7 @@ away.
 
 ![Settings: options](docs/settings-options.png)
 
-The settings page password itself can only be set in the settings file.
+The password itself can only be set in the settings file.
 
 ## Downloads
 
@@ -215,9 +217,9 @@ Everything on the settings page is stored in one INI file, which can also
 be edited by hand (restart the service afterwards):
 
 ```ini
-# Settings page password (user name: admin). It can only be set by editing
-# this file; without it the settings page is open. Put the value in
-# backticks if it contains # or ; (password = `pa#ss`).
+# Password for the player and the settings page (user name: admin). It can
+# only be set by editing this file; without it both pages are open. Put the
+# value in backticks if it contains # or ; (password = `pa#ss`).
 password  = secret
 proxy_url = socks5h://user:password@192.168.1.10:1080
 autoplay     = true
@@ -234,7 +236,8 @@ use_proxy = true
 favorite  = true
 ```
 
-- `password`: settings page password; without it the page is open
+- `password`: password for the player and the settings page (user name
+  `admin`); without it both are open
 - `proxy_url`: `socks5://`, `socks5h://` (DNS on the proxy), `http://` or
   `https://`; without a port, 1080 is used for SOCKS
 - `user_agent` sets the outbound User-Agent; leave it out or empty to use the
