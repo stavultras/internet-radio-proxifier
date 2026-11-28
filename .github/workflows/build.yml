@@ -21,7 +21,7 @@
 #   internet-radio-proxifier-<V>-linux-x86_64.tar.gz     static (musl)
 #   internet-radio-proxifier-<V>-linux-aarch64.tar.gz    static (musl)
 #   internet-radio-proxifier-<V>-windows-x86_64.zip
-#   internet-radio-proxifier-<V>-openwrt-<arch>.apk      OpenWrt 25.x
+#   internet-radio-proxifier-<V>-openwrt-<arch>.apk      OpenWrt 25.12
 #   internet-radio-proxifier-<V>-openwrt-<arch>.ipk      OpenWrt 24.10
 name: Build/release
 
@@ -204,7 +204,7 @@ jobs:
           - **Linux** (`...-linux-x86_64.tar.gz`, `...-linux-aarch64.tar.gz`): static
             binaries, run `./internet-radio-proxifier -a :: -p 9876 -c settings.ini`
           - **Windows** (`...-windows-x86_64.zip`): run `start.cmd`
-          - **OpenWrt 25.x** (`...-openwrt-<arch>.apk`): pick your router's package
+          - **OpenWrt 25.12** (`...-openwrt-<arch>.apk`): pick your router's package
             architecture (`cat /etc/apk/arch`), then
             `apk add --allow-untrusted internet-radio-proxifier-...-openwrt-<arch>.apk`
           - **OpenWrt 24.10** (`...-openwrt-<arch>.ipk`): architecture from

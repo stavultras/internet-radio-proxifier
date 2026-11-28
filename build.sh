@@ -7,7 +7,7 @@
 #   linux-aarch64    internet-radio-proxifier-<V>-linux-aarch64.tar.gz   (static, musl)
 #   windows-x86_64   internet-radio-proxifier-<V>-windows-x86_64.zip
 #   openwrt          internet-radio-proxifier-<V>-openwrt-<arch>.apk (OpenWrt
-#                    25.x) and .ipk (OpenWrt 24.10) for aarch64, x86_64,
+#                    25.12) and .ipk (OpenWrt 24.10) for aarch64, x86_64,
 #                    mipsel_24kc and mips_24kc (needs SDK=..., see
 #                    openwrt/make-apk.sh; the ipk packages are made with
 #                    OpenWrt 24.10's scripts/ipkg-build, downloaded once)
@@ -118,14 +118,14 @@ ipkg_build() {
 	echo "$f"
 }
 
-# apk (OpenWrt 25.x) and ipk (24.10) packages of one binary
+# apk (OpenWrt 25.12) and ipk (24.10) packages of one binary
 package() { # binary, OpenWrt arch
 	openwrt/make-apk.sh "$1" "$2" "$DIST/$NAME-$V-openwrt-$2.apk"
 	IPKG_BUILD=$(ipkg_build) openwrt/make-ipk.sh "$1" "$2" "$DIST/$NAME-$V-openwrt-$2.ipk"
 }
 
 openwrt() {
-	: "${SDK:?set SDK to an OpenWrt 25.x SDK directory (for its apk and fakeroot tools)}"
+	: "${SDK:?set SDK to an OpenWrt 25.12 SDK directory (for its apk and fakeroot tools)}"
 	for t in aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do
 		build $t
 	done

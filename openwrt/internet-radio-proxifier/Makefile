@@ -6,7 +6,7 @@
 #   ln -s /path/to/internet-radio-proxifier/openwrt/internet-radio-proxifier package/internet-radio-proxifier
 #   ./scripts/feeds update packages && ./scripts/feeds install rust
 #   make package/internet-radio-proxifier/compile V=s
-# Works with the OpenWrt 25.x (apk) and 24.10 (ipk) SDKs.
+# Works with the OpenWrt 25.12 (apk) and 24.10 (ipk) SDKs.
 
 include $(TOPDIR)/rules.mk
 

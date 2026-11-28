@@ -27,7 +27,7 @@ and has since been rewritten in Rust.
 - Installable as an app (PWA); lock screen and headset controls (Media
   Session)
 - One static binary of about 2 MB using a few MB of RAM; packages for
-  Linux, Windows and OpenWrt (25.x and 24.10)
+  Linux, Windows and OpenWrt (25.12 and 24.10)
 
 ## Player
 
@@ -126,7 +126,7 @@ Packages for every version are on the
 | `...-openwrt-mipsel_24kc.apk` | OpenWrt on MediaTek MT7621 / MT76x8 (ramips) |
 | `...-openwrt-mips_24kc.apk` | OpenWrt on Atheros / Qualcomm QCA (ath79) |
 
-Every OpenWrt package comes in two formats: `.apk` for OpenWrt 25.x and
+Every OpenWrt package comes in two formats: `.apk` for OpenWrt 25.12 and
 `.ipk` (same names) for OpenWrt 24.10.
 
 ### Linux
@@ -147,7 +147,7 @@ Unpack the zip and run `start.cmd`. It starts the radio on port 9876 with
 Find your router's package architecture, copy the matching package to the
 router and install it.
 
-OpenWrt 25.x (apk; architecture: `cat /etc/apk/arch`):
+OpenWrt 25.12 (apk; architecture: `cat /etc/apk/arch`):
 
 ```sh
 apk add --allow-untrusted /tmp/internet-radio-proxifier-*-openwrt-aarch64_cortex-a53.apk
@@ -164,7 +164,7 @@ opkg install /tmp/internet-radio-proxifier-*-openwrt-aarch64_cortex-a53.ipk
 To build the package into a firmware image, put it into the ImageBuilder's
 `packages/` folder and add `internet-radio-proxifier` to `PACKAGES`.
 
-OpenWrt 25.x: the apk must have its standard file name,
+OpenWrt 25.12: the apk must have its standard file name,
 `internet-radio-proxifier-<version>-r1.apk`. The release file has the
 architecture in its name, which the ImageBuilder does not find ("package
 mentioned in index not found"), so rename it:

@@ -3,7 +3,7 @@
 # way the OpenWrt SDK's include/package-pack.mk does (without compiling in
 # the SDK). Only the SDK's host tools (apk, fakeroot) are used.
 #
-#   SDK=/path/to/openwrt-sdk-25.x openwrt/make-apk.sh BINARY ARCH OUTPUT.apk
+#   SDK=/path/to/openwrt-sdk-25.12 openwrt/make-apk.sh BINARY ARCH OUTPUT.apk
 #
 #   BINARY  e.g. target/aarch64-unknown-linux-musl/release/internet-radio-proxifier
 #   ARCH    OpenWrt package architecture, e.g. aarch64_cortex-a53, x86_64
@@ -18,7 +18,7 @@ umask 022  # package dirs 0755, files 0644, like OpenWrt's own
 BIN=$1 ARCH=$2 OUT=$3
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/.." && pwd)
-: "${SDK:?set SDK to an OpenWrt 25.x SDK directory}"
+: "${SDK:?set SDK to an OpenWrt 25.12 SDK directory}"
 HOSTBIN=$SDK/staging_dir/host/bin
 VERSION=${VERSION:-$(tr -d ' \r\n' < "$ROOT/VERSION")-r1}
 SIGN_KEY=${SIGN_KEY:-$SDK/private-key.pem}
